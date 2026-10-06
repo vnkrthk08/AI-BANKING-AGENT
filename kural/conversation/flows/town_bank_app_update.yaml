@@ -1,0 +1,308 @@
+flow_id: town_bank_app_update
+version: "1.1.0"
+campaign: APP_UPDATE_2026_10
+campaign_type: SERVICE
+initial_state: IDENTITY_CHECK
+global_intents:
+  - FRAUD_REPORT
+  - OPT_OUT
+  - WRONG_PARTY
+  - IDENTITY_DENIED
+  - WANTS_HUMAN
+  - CANCEL
+  - QUESTION_ABOUT_CALL
+  - QUESTION_ABOUT_AGENT
+  - TRUST_CONCERN
+  - OFF_TOPIC
+  - UNKNOWN
+
+states:
+  CALL_INITIATED:
+    say: S-OPEN-01
+    accepts:
+      - ANSWERED_HUMAN
+      - ANSWERED_MACHINE
+      - NO_ANSWER
+      - BUSY_LINE
+      - FAILED
+    timeout_ms: 10000
+    max_reprompts: 0
+    on:
+      ANSWERED_HUMAN: IDENTITY_CHECK
+      ANSWERED_MACHINE: CALL_ENDED
+      NO_ANSWER: CALL_ENDED
+      BUSY_LINE: CALL_ENDED
+      FAILED: CALL_ENDED
+
+  IDENTITY_CHECK:
+    say: S-OPEN-01
+    accepts:
+      - IDENTITY_CONFIRMED
+      - IDENTITY_DENIED
+      - WRONG_PARTY
+      - NOT_AVAILABLE
+      - QUESTION_ABOUT_CALL
+      - QUESTION_ABOUT_AGENT
+      - TRUST_CONCERN
+      - BUSY
+      - CALLBACK_REQUEST
+      - WANTS_HUMAN
+      - DECLINE
+    timeout_ms: 8000
+    max_reprompts: 2
+    on:
+      IDENTITY_CONFIRMED: PERMISSION_CHECK
+      IDENTITY_DENIED: CALL_WRAP_UP
+      WRONG_PARTY: WRONG_PARTY
+      NOT_AVAILABLE: CALL_WRAP_UP
+      BUSY: CALLBACK_SCHEDULING
+      CALLBACK_REQUEST: CALLBACK_SCHEDULING
+      WANTS_HUMAN: HUMAN_ESCALATION
+      DECLINE: CALL_WRAP_UP
+      TIMEOUT: CALL_WRAP_UP
+
+  PERMISSION_CHECK:
+    say: S-PURPOSE-01
+    accepts:
+      - AFFIRM
+      - DENY
+      - BUSY
+      - CALLBACK_REQUEST
+      - QUICK_PLEASE
+      - DECLINE
+      - QUESTION_ABOUT_CALL
+      - HOW_LONG
+    timeout_ms: 8000
+    max_reprompts: 2
+    on:
+      AFFIRM: APP_STATUS_CHECK
+      QUICK_PLEASE: APP_STATUS_CHECK
+      BUSY: CALLBACK_SCHEDULING
+      CALLBACK_REQUEST: CALLBACK_SCHEDULING
+      DENY: CALLBACK_SCHEDULING
+      DECLINE: CALL_WRAP_UP
+      TIMEOUT: CALL_WRAP_UP
+
+  APP_STATUS_CHECK:
+    say: S-APP-01
+    accepts:
+      - AFFIRM
+      - APP_NOT_INSTALLED
+      - APP_ALREADY_UPDATED
+      - UNSURE
+      - APP_UNUSED
+      - APP_DELETED
+      - USES_WEBSITE
+      - WHICH_APP
+      - APP_UPDATE_ISSUE
+      - GENERAL_APP_ISSUE
+    timeout_ms: 8000
+    max_reprompts: 2
+    on:
+      AFFIRM: UPDATE_GUIDANCE
+      APP_ALREADY_UPDATED: ISSUE_CHECK
+      APP_NOT_INSTALLED: INSTALL_GUIDANCE
+      APP_DELETED: INSTALL_GUIDANCE
+      USES_WEBSITE: INSTALL_GUIDANCE
+      APP_UPDATE_ISSUE: ISSUE_DIAGNOSIS
+      GENERAL_APP_ISSUE: ISSUE_DIAGNOSIS
+      UNSURE: APP_STATUS_CHECK
+      TIMEOUT: CALL_WRAP_UP
+
+  INSTALL_GUIDANCE:
+    say: S-INSTALL-01
+    accepts:
+      - AFFIRM
+      - APP_UPDATE_SUCCESS
+      - LATER
+      - DECLINE
+      - APP_UPDATE_ISSUE
+      - WANTS_HUMAN
+    timeout_ms: 10000
+    max_reprompts: 2
+    on:
+      AFFIRM: ISSUE_CHECK
+      APP_UPDATE_SUCCESS: ISSUE_CHECK
+      LATER: CALL_WRAP_UP
+      DECLINE: CALL_WRAP_UP
+      APP_UPDATE_ISSUE: ISSUE_DIAGNOSIS
+      WANTS_HUMAN: HUMAN_ESCALATION
+      TIMEOUT: CALL_WRAP_UP
+
+  UPDATE_GUIDANCE:
+    say: S-UPD-01
+    accepts:
+      - APP_UPDATE_SUCCESS
+      - APP_UPDATE_ISSUE
+      - APP_ALREADY_UPDATED
+      - WAIT
+      - LATER
+      - NO_UPDATE_BUTTON
+    timeout_ms: 10000
+    max_reprompts: 2
+    on:
+      APP_UPDATE_SUCCESS: UPDATE_CONFIRMATION
+      APP_ALREADY_UPDATED: ISSUE_CHECK
+      NO_UPDATE_BUTTON: ISSUE_CHECK
+      APP_UPDATE_ISSUE: ISSUE_DIAGNOSIS
+      WAIT: UPDATE_GUIDANCE
+      LATER: ISSUE_CHECK
+      TIMEOUT: CALL_WRAP_UP
+
+  UPDATE_CONFIRMATION:
+    say: S-UPD-OK
+    accepts:
+      - AFFIRM
+      - DENY
+      - GENERAL_APP_ISSUE
+    timeout_ms: 8000
+    max_reprompts: 1
+    on:
+      AFFIRM: ISSUE_CHECK
+      DENY: ISSUE_CHECK
+      GENERAL_APP_ISSUE: ISSUE_DIAGNOSIS
+      TIMEOUT: ISSUE_CHECK
+
+  ISSUE_CHECK:
+    say: S-ISSUE-01
+    accepts:
+      - DENY
+      - AFFIRM
+      - GENERAL_APP_ISSUE
+      - APP_UPDATE_ISSUE
+      - WANTS_HUMAN
+      - ISSUE_RESOLVED_ALREADY
+    timeout_ms: 8000
+    max_reprompts: 1
+    on:
+      DENY: CALL_WRAP_UP
+      AFFIRM: ISSUE_DIAGNOSIS
+      GENERAL_APP_ISSUE: ISSUE_DIAGNOSIS
+      APP_UPDATE_ISSUE: ISSUE_DIAGNOSIS
+      ISSUE_RESOLVED_ALREADY: ISSUE_CHECK
+      WANTS_HUMAN: HUMAN_ESCALATION
+      TIMEOUT: CALL_WRAP_UP
+
+  ISSUE_DIAGNOSIS:
+    say: S-DIAG-UPD-01
+    accepts:
+      - AFFIRM
+      - DENY
+      - GENERAL_APP_ISSUE
+      - APP_UPDATE_ISSUE
+      - WANTS_HUMAN
+      - ISSUE_RESOLVED_ALREADY
+      - WAIT
+      - DECLINE
+    timeout_ms: 10000
+    max_reprompts: 2
+    on:
+      WANTS_HUMAN: HUMAN_ESCALATION
+      AFFIRM: HUMAN_ESCALATION
+      DENY: CALL_WRAP_UP
+      ISSUE_RESOLVED_ALREADY: CALL_WRAP_UP
+      DECLINE: CALL_WRAP_UP
+      TIMEOUT: CALL_WRAP_UP
+
+  HUMAN_ESCALATION:
+    say: S-HUMAN-01
+    accepts:
+      - AFFIRM
+      - CALLBACK_REQUEST
+      - DENY
+      - CANCEL
+    timeout_ms: 10000
+    max_reprompts: 2
+    on:
+      AFFIRM: CALLBACK_SCHEDULING
+      CALLBACK_REQUEST: CALLBACK_SCHEDULING
+      DENY: CALL_WRAP_UP
+      CANCEL: CALL_WRAP_UP
+      TIMEOUT: CALL_WRAP_UP
+
+  CALLBACK_SCHEDULING:
+    say: S-CB-ASK
+    accepts:
+      - CALLBACK_REQUEST
+      - AFFIRM
+      - DENY
+      - CANCEL
+    timeout_ms: 10000
+    max_reprompts: 2
+    on:
+      CALLBACK_REQUEST: CALLBACK_CONFIRMATION
+      AFFIRM: CALLBACK_CONFIRMATION
+      DENY: CALL_WRAP_UP
+      CANCEL: CALL_WRAP_UP
+      TIMEOUT: CALL_WRAP_UP
+
+  CALLBACK_CONFIRMATION:
+    say: S-CB-CONFIRM
+    accepts:
+      - AFFIRM
+      - DENY
+      - CALLBACK_REQUEST
+      - CANCEL
+    timeout_ms: 10000
+    max_reprompts: 2
+    on:
+      AFFIRM: CALL_WRAP_UP
+      CALLBACK_REQUEST: CALLBACK_CONFIRMATION
+      DENY: CALLBACK_SCHEDULING
+      CANCEL: CALL_WRAP_UP
+      TIMEOUT: CALL_WRAP_UP
+
+  FRAUD_ESCALATION:
+    say: S-FRAUD-01
+    accepts:
+      - AFFIRM
+      - DENY
+      - ANY
+    timeout_ms: 8000
+    max_reprompts: 1
+    on:
+      AFFIRM: CALL_WRAP_UP
+      DENY: CALL_WRAP_UP
+      ANY: CALL_WRAP_UP
+      TIMEOUT: CALL_WRAP_UP
+
+  OPT_OUT:
+    say: S-OPTOUT-01
+    accepts:
+      - AFFIRM
+      - DENY
+      - ANY
+    timeout_ms: 8000
+    max_reprompts: 1
+    on:
+      AFFIRM: CALL_ENDED
+      DENY: CALL_ENDED
+      ANY: CALL_ENDED
+      TIMEOUT: CALL_ENDED
+
+  WRONG_PARTY:
+    say: S-WRONG-01
+    accepts:
+      - ANY
+    timeout_ms: 8000
+    max_reprompts: 0
+    on:
+      ANY: CALL_ENDED
+      TIMEOUT: CALL_ENDED
+
+  CALL_WRAP_UP:
+    say: S-END-OK
+    accepts:
+      - ANY
+    timeout_ms: 5000
+    max_reprompts: 0
+    on:
+      ANY: CALL_ENDED
+      TIMEOUT: CALL_ENDED
+
+  CALL_ENDED:
+    say: null
+    accepts: []
+    timeout_ms: 0
+    max_reprompts: 0
+    on: {}

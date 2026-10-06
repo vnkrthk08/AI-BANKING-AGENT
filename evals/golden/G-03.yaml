@@ -1,0 +1,34 @@
+id: G-03
+title: OTP mid-sentence -> call continues -> update failure -> human -> callback
+clock: 2026-10-06T14:30:00+05:30
+customer_ref: C48291
+first_name: Rahul
+turns:
+  - subbu: S-OPEN-01
+  - customer: "yes"
+    expect: {intent: IDENTITY_CONFIRMED}
+  - customer: "okay go ahead"
+    expect: {intent: AFFIRM, subbu: S-APP-01}
+  - customer: "yes installed but it's not updating and i got an otp it's 4 8 2 9 1 3"
+    expect:
+      redaction: {types: [OTP], raw_digits_present_anywhere: false}
+      llm_input_contains: "[REDACTED_OTP]"
+      intent: APP_UPDATE_ISSUE
+      subbu: [S-SENS-01, S-DIAG-UPD-01]
+      next_state: ISSUE_DIAGNOSIS
+      call_active: true
+  - customer: "says not enough storage"
+    expect: {issue_code: UPDATE_FAILED_STORAGE, subbu: [S-DIAG-STORAGE, S-DIAG-OFFER]}
+  - customer: "can someone from your team help me"
+    expect: {intent: WANTS_HUMAN, next_state: CALLBACK_SCHEDULING}
+  - customer: "tomorrow after 6"
+    expect: {resolver: {local: "2026-10-07T18:00:00+05:30", rule: R5}}
+  - customer: "yes"
+    expect: {action: [create_case, upsert_callback], subbu: S-CB-DONE}
+final:
+  outcome: APP_SUPPORT_CASE_CREATED
+  cases: 1
+  case: {issue_code: UPDATE_FAILED_STORAGE, priority: NORMAL}
+  callbacks: 1
+  security_events: [{type: SENSITIVE_DATA, subtype: OTP}]
+  forbidden_anywhere: ["482913", "4 8 2 9 1 3"]

@@ -1,0 +1,53 @@
+id: G-06-TWIST
+title: Not interested -> one benefit -> still no -> polite end
+clock: 2026-10-06 14:30:00+05:30
+customer_ref: C48291
+first_name: Rahul
+turns:
+- subbu: S-OPEN-01
+- customer: 'yes'
+  expect:
+    intent: IDENTITY_CONFIRMED
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: IDENTITY_CONFIRMED
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: IDENTITY_CONFIRMED
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: IDENTITY_CONFIRMED
+- customer: not interested
+  expect:
+    intent: DECLINE
+    subbu: S-DECLINE-01
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: DECLINE
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: DECLINE
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: DECLINE
+- customer: no leave it
+  expect:
+    intent: DECLINE
+    subbu: S-DECLINE-END
+    next_state: CALL_ENDED
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: DECLINE
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: DECLINE
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: DECLINE
+final:
+  outcome: CUSTOMER_DECLINED
+  cases: 0
+  callbacks: 0

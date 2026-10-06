@@ -1,0 +1,22 @@
+id: G-08
+title: Ambiguous and invalid times
+clock: 2026-10-06T14:30:00+05:30
+customer_ref: C48291
+first_name: Rahul
+turns:
+  - subbu: S-OPEN-01
+  - customer: "yes"
+    expect: {intent: IDENTITY_CONFIRMED}
+  - customer: "busy now"
+    expect: {intent: BUSY, subbu: S-BUSY-01}
+  - customer: "call at 1"
+    expect: {resolver: {status: PAST}, subbu: S-CB-PAST}
+  - customer: "okay then 10 at night"
+    expect: {resolver: {status: OUT_OF_POLICY}, subbu: S-CB-WINDOW}
+  - customer: "next sunday then"
+    expect: {resolver: {status: OUT_OF_POLICY, reason: SUNDAY}, subbu_contains: ["Monday", "12 October"]}
+  - customer: "fine monday 11"
+    expect: {resolver: {local: "2026-10-12T11:00:00+05:30"}}
+  - customer: "yes"
+    expect: {action: upsert_callback}
+final: {outcome: CALLBACK_SCHEDULED, callbacks: 1}

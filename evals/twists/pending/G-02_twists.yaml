@@ -1,0 +1,118 @@
+id: G-02-TWIST
+title: Busy -> Hinglish callback -> change time -> dashboard check
+clock: 2026-10-06 14:30:00+05:30
+customer_ref: C48291
+first_name: Rahul
+turns:
+- subbu: S-OPEN-01
+- customer: haan bolo
+  expect:
+    intent: IDENTITY_CONFIRMED
+    subbu: S-PURPOSE-01
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: IDENTITY_CONFIRMED
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: IDENTITY_CONFIRMED
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: IDENTITY_CONFIRMED
+- customer: abhi busy hoon kal shaam ko call karna
+  expect:
+    intent: CALLBACK_REQUEST
+    resolver:
+      status: RESOLVED
+      local: '2026-10-07T18:00:00+05:30'
+      rule: R7
+    next_state: CALLBACK_CONFIRMATION
+    subbu_contains:
+    - Wednesday
+    - 7 October
+    - 6 PM
+    db:
+      callbacks: 0
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: CALLBACK_REQUEST
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: CALLBACK_REQUEST
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: CALLBACK_REQUEST
+- customer: make it 5
+  expect:
+    intent: CALLBACK_REQUEST
+    resolver:
+      local: '2026-10-07T17:00:00+05:30'
+    subbu_contains:
+    - 5 PM
+    db:
+      callbacks: 0
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: CALLBACK_REQUEST
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: CALLBACK_REQUEST
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: CALLBACK_REQUEST
+- customer: haan theek hai
+  expect:
+    intent: AFFIRM
+    action: upsert_callback
+    subbu: S-CB-DONE
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: AFFIRM
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: AFFIRM
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: AFFIRM
+- customer: actually 6 is better
+  expect:
+    intent: CALLBACK_REQUEST
+    subbu: S-CB-MOVED
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: CALLBACK_REQUEST
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: CALLBACK_REQUEST
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: CALLBACK_REQUEST
+- customer: 'yes'
+  expect:
+    intent: AFFIRM
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: AFFIRM
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: AFFIRM
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: AFFIRM
+final:
+  outcome: CALLBACK_SCHEDULED
+  callbacks: 1
+  callback:
+    status: SCHEDULED
+    local: '2026-10-07T18:00:00+05:30'
+    version: 2
+    reason: CUSTOMER_BUSY
+  callback_history:
+  - CREATED
+  - RESCHEDULED_BY_CUSTOMER
+  dashboard_event: callback.updated

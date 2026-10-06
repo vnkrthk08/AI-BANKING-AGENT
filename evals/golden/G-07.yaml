@@ -1,0 +1,22 @@
+id: G-07
+title: Questions everywhere (trust, AI, number, recording) -> still finishes
+clock: 2026-10-06T14:30:00+05:30
+customer_ref: C48291
+first_name: Rahul
+turns:
+  - subbu: S-OPEN-01
+  - customer: "is this a scam call"
+    expect: {intent: TRUST_CONCERN, subbu: S-TRUST-01, next_state: IDENTITY_CHECK}
+  - customer: "okay yes i'm rahul"
+    expect: {intent: IDENTITY_CONFIRMED}
+  - customer: "are you a robot"
+    expect: {intent: QUESTION_ABOUT_AGENT, subbu: [S-Q-AI, S-REASK-PERM]}
+  - customer: "how did you get my number"
+    expect: {intent: QUESTION_ABOUT_CALL, subbu: [S-Q-NUMBER, S-REASK-PERM]}
+  - customer: "fine go on"
+    expect: {intent: AFFIRM, next_state: APP_STATUS_CHECK}
+  - customer: "already updated it last week"
+    expect: {intent: APP_ALREADY_UPDATED, subbu: [S-UPTODATE-01, S-ISSUE-01]}
+  - customer: "no"
+    expect: {next_state: CALL_ENDED}
+final: {outcome: COMPLETED_SUCCESSFULLY}

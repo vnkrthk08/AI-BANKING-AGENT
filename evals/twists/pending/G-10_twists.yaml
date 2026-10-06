@@ -1,0 +1,68 @@
+id: G-10-TWIST
+title: Silence, noise and system failure
+clock: 2026-10-06 14:30:00+05:30
+customer_ref: C48291
+first_name: Rahul
+fault_injection:
+  llm:
+    timeout_after_turn: 3
+turns:
+- subbu: S-OPEN-01
+- customer: <silence 8s>
+  expect:
+    subbu: S-SIL-01
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: UNKNOWN
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: UNKNOWN
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: UNKNOWN
+- customer: yes sorry speaking
+  expect:
+    intent: IDENTITY_CONFIRMED
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: IDENTITY_CONFIRMED
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: IDENTITY_CONFIRMED
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: IDENTITY_CONFIRMED
+- customer: <noise>
+  expect:
+    subbu: S-NOHEAR-01
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: UNKNOWN
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: UNKNOWN
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: UNKNOWN
+- customer: busy call later
+  expect:
+    llm: timeout
+    fallback: keyword_nlu
+    intent: BUSY
+    subbu: S-BUSY-01
+    max_silence_ms: 3000
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: BUSY
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: BUSY
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: BUSY
+final:
+  call_failed: false

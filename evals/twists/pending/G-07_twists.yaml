@@ -1,0 +1,112 @@
+id: G-07-TWIST
+title: Questions everywhere (trust, AI, number, recording) -> still finishes
+clock: 2026-10-06 14:30:00+05:30
+customer_ref: C48291
+first_name: Rahul
+turns:
+- subbu: S-OPEN-01
+- customer: is this a scam call
+  expect:
+    intent: TRUST_CONCERN
+    subbu: S-TRUST-01
+    next_state: IDENTITY_CHECK
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: TRUST_CONCERN
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: TRUST_CONCERN
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: TRUST_CONCERN
+- customer: okay yes i'm rahul
+  expect:
+    intent: IDENTITY_CONFIRMED
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: IDENTITY_CONFIRMED
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: IDENTITY_CONFIRMED
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: IDENTITY_CONFIRMED
+- customer: are you a robot
+  expect:
+    intent: QUESTION_ABOUT_AGENT
+    subbu:
+    - S-Q-AI
+    - S-REASK-PERM
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: QUESTION_ABOUT_AGENT
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: QUESTION_ABOUT_AGENT
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: QUESTION_ABOUT_AGENT
+- customer: how did you get my number
+  expect:
+    intent: QUESTION_ABOUT_CALL
+    subbu:
+    - S-Q-NUMBER
+    - S-REASK-PERM
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: QUESTION_ABOUT_CALL
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: QUESTION_ABOUT_CALL
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: QUESTION_ABOUT_CALL
+- customer: fine go on
+  expect:
+    intent: AFFIRM
+    next_state: APP_STATUS_CHECK
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: AFFIRM
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: AFFIRM
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: AFFIRM
+- customer: already updated it last week
+  expect:
+    intent: APP_ALREADY_UPDATED
+    subbu:
+    - S-UPTODATE-01
+    - S-ISSUE-01
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: APP_ALREADY_UPDATED
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: APP_ALREADY_UPDATED
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: APP_ALREADY_UPDATED
+- customer: 'no'
+  expect:
+    next_state: CALL_ENDED
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: UNKNOWN
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: UNKNOWN
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: UNKNOWN
+final:
+  outcome: COMPLETED_SUCCESSFULLY

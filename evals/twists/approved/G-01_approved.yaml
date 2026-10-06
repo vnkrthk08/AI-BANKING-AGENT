@@ -1,0 +1,121 @@
+id: G-01-TWIST
+title: Happy path, customer interrupts during instructions
+clock: 2026-10-06 14:30:00+05:30
+customer_ref: C48291
+first_name: Rahul
+turns:
+- subbu: S-OPEN-01
+- customer: yes speaking
+  expect:
+    intent: IDENTITY_CONFIRMED
+    next_state: PERMISSION_CHECK
+    subbu: S-PURPOSE-01
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: IDENTITY_CONFIRMED
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: IDENTITY_CONFIRMED
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: IDENTITY_CONFIRMED
+- customer: sure
+  expect:
+    intent: AFFIRM
+    next_state: APP_STATUS_CHECK
+    subbu: S-APP-01
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: AFFIRM
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: AFFIRM
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: AFFIRM
+- customer: yes it's there
+  expect:
+    intent: AFFIRM
+    subbu: S-APP-02
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: AFFIRM
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: AFFIRM
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: AFFIRM
+- customer: no not updated
+  expect:
+    intent: DENY
+    next_state: UPDATE_GUIDANCE
+    subbu: S-UPD-01
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: DENY
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: DENY
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: DENY
+- customer: wait wait one second
+  barge_in_during: S-UPD-01
+  expect:
+    intent: WAIT
+    tts_stopped: true
+    next_state: UPDATE_GUIDANCE
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: WAIT
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: WAIT
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: WAIT
+- customer: okay done updated
+  expect:
+    intent: APP_UPDATE_SUCCESS
+    next_state: ISSUE_CHECK
+    subbu:
+    - S-UPD-OK
+    - S-ISSUE-01
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: APP_UPDATE_SUCCESS
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: APP_UPDATE_SUCCESS
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: APP_UPDATE_SUCCESS
+- customer: no that's all
+  expect:
+    intent: DENY
+    next_state: CALL_ENDED
+    subbu: S-END-OK
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: DENY
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: DENY
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: DENY
+final:
+  outcome: COMPLETED_SUCCESSFULLY
+  cases: 0
+  callbacks: 0
+  flags:
+    ai_disclosed: true
+    identity_confirmed: true

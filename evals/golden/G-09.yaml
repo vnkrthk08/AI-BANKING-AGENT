@@ -1,0 +1,28 @@
+id: G-09
+title: Human request, then cancel, then opt-out + help
+clock: 2026-10-06T14:30:00+05:30
+customer_ref: C48291
+first_name: Rahul
+turns:
+  - subbu: S-OPEN-01
+  - customer: "yes"
+    expect: {intent: IDENTITY_CONFIRMED}
+  - customer: "sure"
+    expect: {intent: AFFIRM}
+  - customer: "get me a real person"
+    expect: {intent: WANTS_HUMAN, subbu: [S-HUMAN-01, S-CB-ASK]}
+  - customer: "never mind, it's okay"
+    expect: {intent: CANCEL, next_state: APP_STATUS_CHECK, db: {cases: 0}}
+  - customer: "don't call me again but my app keeps crashing"
+    expect:
+      intent: OPT_OUT
+      secondary: [GENERAL_APP_ISSUE]
+      actions: [record_opt_out]
+      next_state: ISSUE_DIAGNOSIS
+      subbu_contains: ["won't call", "crash"]
+  - customer: "after login"
+    expect: {issue_code: APP_CRASH}
+  - customer: "have someone call me tomorrow morning"
+    expect: {resolver: {local: "2026-10-07T10:00:00+05:30"}}
+  - customer: "yes"
+final: {outcome: APP_SUPPORT_CASE_CREATED, opt_out: true, cases: 1, callbacks: 1}

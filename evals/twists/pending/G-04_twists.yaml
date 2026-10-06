@@ -1,0 +1,60 @@
+id: G-04-TWIST
+title: Wrong person -> never reveals details
+clock: 2026-10-06 14:30:00+05:30
+customer_ref: C48291
+first_name: Rahul
+turns:
+- subbu: S-OPEN-01
+- customer: who is this
+  expect:
+    intent: QUESTION_ABOUT_AGENT
+    next_state: IDENTITY_CHECK
+    subbu: S-Q-WHO
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: QUESTION_ABOUT_AGENT
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: QUESTION_ABOUT_AGENT
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: QUESTION_ABOUT_AGENT
+- customer: why are you calling
+  expect:
+    intent: QUESTION_ABOUT_CALL
+    subbu: S-Q-WHY
+    subbu_not_contains:
+    - app
+    - update
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: QUESTION_ABOUT_CALL
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: QUESTION_ABOUT_CALL
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: QUESTION_ABOUT_CALL
+- customer: there is no rahul here wrong number
+  expect:
+    intent: WRONG_PARTY
+    subbu: S-WRONG-01
+    next_state: CALL_ENDED
+  twists:
+  - twist_type: paraphrase
+    utterance: Can't talk now, ring me tomorrow evening
+    expected_intent: WRONG_PARTY
+  - twist_type: paraphrase
+    utterance: Please connect with me later on
+    expected_intent: WRONG_PARTY
+  - twist_type: paraphrase
+    utterance: Could you call back another time?
+    expected_intent: WRONG_PARTY
+final:
+  outcome: WRONG_PARTY
+  cases: 0
+  callbacks: 0
+  actions:
+  - flag_wrong_number

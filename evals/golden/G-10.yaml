@@ -1,0 +1,22 @@
+id: G-10
+title: Silence, noise and system failure
+clock: 2026-10-06T14:30:00+05:30
+customer_ref: C48291
+first_name: Rahul
+fault_injection: {llm: {timeout_after_turn: 3}}
+turns:
+  - subbu: S-OPEN-01
+  - customer: "<silence 8s>"
+    expect: {subbu: S-SIL-01}
+  - customer: "yes sorry speaking"
+    expect: {intent: IDENTITY_CONFIRMED}
+  - customer: "<noise>"
+    expect: {subbu: S-NOHEAR-01}
+  - customer: "busy call later"
+    expect:
+      llm: timeout
+      fallback: keyword_nlu
+      intent: BUSY
+      subbu: S-BUSY-01
+      max_silence_ms: 3000
+final: {call_failed: false}

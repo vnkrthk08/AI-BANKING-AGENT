@@ -1,0 +1,1 @@
+"""KURAL AVA application package."""

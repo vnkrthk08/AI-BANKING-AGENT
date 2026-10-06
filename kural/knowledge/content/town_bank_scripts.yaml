@@ -1,0 +1,456 @@
+version: "1.1"
+campaign: "APP_UPDATE_2026_10"
+bank_name: "Town Bank"
+persona_name: "Subbu"
+scripts:
+  S-OPEN-01:
+    text: "Hi, this is Subbu, Town Bank's automated assistant. Am I speaking with {first_name}?"
+    rephrase: false
+    variants:
+      - "Hi, this is Subbu, Town Bank's automated assistant. Am I speaking with {first_name}?"
+      - "Hello, this is Subbu, an automated assistant from Town Bank. May I speak with {first_name}, please?"
+  S-OPEN-01b:
+    text: "Hello, this is Subbu, an automated assistant from Town Bank. May I speak with {first_name}, please?"
+    rephrase: false
+    variants: []
+  S-OPEN-01n:
+    text: "Hi, this is Subbu, Town Bank's automated assistant. Am I speaking with the account holder?"
+    rephrase: false
+    variants: []
+  S-REASK-ID:
+    text: "Am I speaking with {first_name}?"
+    rephrase: false
+    variants: []
+  S-PURPOSE-01:
+    text: "Thanks, {first_name}. I'm calling about a quick update to your Town Bank mobile app — is now a good time for two minutes?"
+    rephrase: true
+    variants:
+      - "Thanks, {first_name}. I'm calling about a quick update to your Town Bank mobile app — is now a good time for two minutes?"
+      - "Thank you. This is about an update to your Town Bank mobile app; it'll only take a couple of minutes. Is now okay?"
+  S-PURPOSE-01b:
+    text: "Thank you. This is about an update to your Town Bank mobile app; it'll only take a couple of minutes. Is now okay?"
+    rephrase: true
+    variants: []
+  S-REC-01:
+    text: "Just so you know, this call may be recorded for quality and security."
+    rephrase: false
+    variants: []
+  S-NOTAVAIL-01:
+    text: "Thanks for letting me know. I'll try {first_name} another time — have a good day."
+    rephrase: true
+    variants:
+      - "Thanks for letting me know. I'll try {first_name} another time — have a good day."
+      - "Understood, I will reach back out to {first_name} at another time. Have a good day."
+  S-WRONG-01:
+    text: "Sorry for the trouble. I'll update our records — have a good day."
+    rephrase: false
+    variants: []
+  S-ID-REFUSE-01:
+    text: "That's fair. I can only discuss this with {first_name}, and I won't ask for any PIN or OTP. Is this {first_name}?"
+    rephrase: false
+    variants: []
+  S-ID-REFUSE-END:
+    text: "No problem. You can always reach Town Bank on the number on your card. Goodbye."
+    rephrase: false
+    variants: []
+  S-PERM-OK:
+    text: "Great, thanks."
+    rephrase: true
+    variants:
+      - "Great, thanks."
+      - "Perfect, thank you."
+      - "Got it, thanks."
+  S-REASK-PERM:
+    text: "Is now an okay time?"
+    rephrase: true
+    variants:
+      - "Is now an okay time?"
+      - "Is now a convenient time for two minutes?"
+  S-BUSY-PRE:
+    text: "No problem. Is this {first_name}? I can call back at a better time."
+    rephrase: false
+    variants: []
+  S-HUMAN-PRE:
+    text: "Sure, I can arrange that. First, am I speaking with {first_name}?"
+    rephrase: false
+    variants: []
+  S-CB-PRE:
+    text: "Sure. Is this {first_name}? I'll set up a time that suits you."
+    rephrase: false
+    variants: []
+  S-Q-WHO-PRE:
+    text: "I'm Subbu, Town Bank's automated assistant. Am I speaking with {first_name}?"
+    rephrase: false
+    variants: []
+  S-Q-WHY-PRE:
+    text: "It's regarding important service information for a Town Bank customer. Could you confirm if I'm speaking with {first_name}?"
+    rephrase: false
+    variants: []
+  S-Q-AI-PRE:
+    text: "Yes, I'm Subbu, Town Bank's automated assistant. Am I speaking with {first_name}?"
+    rephrase: false
+    variants: []
+  S-TRUST-PRE:
+    text: "Good question to ask. I won't ask for any PIN, OTP or password, and you can always call Town Bank on the number on your card. Am I speaking with {first_name}?"
+    rephrase: false
+    variants: []
+  S-Q-WHO:
+    text: "I'm Subbu, Town Bank's automated assistant."
+    rephrase: false
+    variants: []
+  S-Q-AI:
+    text: "Yes, I'm an automated assistant from Town Bank — not a person."
+    rephrase: false
+    variants: []
+  S-Q-HOW-MADE:
+    text: "I'm Town Bank's automated voice assistant — I'm here just to help with the app update."
+    rephrase: false
+    variants: []
+  S-Q-WHY:
+    text: "We're helping customers make sure their Town Bank app is up to date — it keeps it secure and working smoothly."
+    rephrase: true
+    variants: []
+  S-Q-WHAT-NEED:
+    text: "Nothing confidential — just a minute to check your app is updated."
+    rephrase: true
+    variants: []
+  S-Q-HOW-LONG:
+    text: "About two minutes."
+    rephrase: true
+    variants: []
+  S-Q-NUMBER:
+    text: "It's the number registered with your Town Bank account."
+    rephrase: false
+    variants: []
+  S-Q-WHAT-BANK:
+    text: "Town Bank is the bank where your account is registered with this number."
+    rephrase: false
+    variants: []
+  S-Q-WHICH-APP:
+    text: "The official Town Bank mobile banking app."
+    rephrase: false
+    variants: []
+  S-Q-RECORDING:
+    text: "This call isn't being recorded, though a text summary is kept for our records."
+    rephrase: false
+    variants: []
+  S-TRUST-01:
+    text: "It's a genuine Town Bank service call, and I'll never ask for your PIN, OTP or password. If you'd prefer, you can hang up and call the number on the back of your card."
+    rephrase: false
+    variants: []
+  S-TRUST-02:
+    text: "Absolutely — the number on your card or on Town Bank's official website is the safest way."
+    rephrase: false
+    variants: []
+  S-TRUST-03:
+    text: "You can check by calling Town Bank on the number on your card; I won't ask you for any confidential details."
+    rephrase: false
+    variants: []
+  S-TRUST-END:
+    text: "That's completely fine — thanks, and have a good day."
+    rephrase: true
+    variants: []
+  S-APP-01:
+    text: "Is the Town Bank app installed on your phone?"
+    rephrase: false
+    variants: []
+  S-APP-02:
+    text: "Have you updated it in the last few days?"
+    rephrase: false
+    variants: []
+  S-APP-UNSURE:
+    text: "No problem — if you see the Town Bank app on your phone, it's installed. Can you see it?"
+    rephrase: true
+    variants: []
+  S-APP-WEB:
+    text: "That's fine — the website works too. Would you like the steps to install the app, or shall we leave it there?"
+    rephrase: true
+    variants: []
+  S-UPTODATE-01:
+    text: "Perfect, then you're already up to date."
+    rephrase: true
+    variants: []
+  S-UPTODATE-02:
+    text: "If it shows 'Open' instead of 'Update', you're already on the latest version."
+    rephrase: true
+    variants: []
+  S-INSTALL-01:
+    text: "You can get it from the Play Store or App Store — search 'Town Bank' and install the one published by Town Bank."
+    rephrase: false
+    variants: []
+  S-INSTALL-02:
+    text: "Would you like to do that now, or later?"
+    rephrase: true
+    variants: []
+  S-INSTALL-LATER:
+    text: "No problem — you can install it any time from the official store."
+    rephrase: true
+    variants: []
+  S-UPD-01:
+    text: "It's quick — open the Play Store or App Store, search 'Town Bank', and tap Update if you see it."
+    rephrase: false
+    variants: []
+  S-UPD-02:
+    text: "Take your time — tell me once it's done, or if anything goes wrong."
+    rephrase: true
+    variants: []
+  S-WAIT-01:
+    text: "No rush, I'm still here."
+    rephrase: true
+    variants: []
+  S-UPD-OK:
+    text: "Perfect, you're all set."
+    rephrase: true
+    variants: []
+  S-UPD-LATER:
+    text: "Sure — you can update any time from the store."
+    rephrase: true
+    variants: []
+  S-REASK-APP:
+    text: "So — is the Town Bank app on your phone?"
+    rephrase: true
+    variants: []
+  S-REASK-UPD:
+    text: "Were you able to update it?"
+    rephrase: true
+    variants: []
+  S-ISSUE-01:
+    text: "Is there anything else you're having trouble with in the app?"
+    rephrase: false
+    variants: []
+  S-DIAG-UPD-01:
+    text: "What happens when you try — do you see an error, or does it just not start?"
+    rephrase: true
+    variants: []
+  S-DIAG-STORAGE:
+    text: "That usually means the phone's low on space; clearing a few large files or unused apps often fixes it."
+    rephrase: true
+    variants: []
+  S-DIAG-OFFER:
+    text: "Want to try that later, or should I have someone from our team help you?"
+    rephrase: true
+    variants: []
+  S-DIAG-CRASH-01:
+    text: "Does it close straight away, or after you log in?"
+    rephrase: true
+    variants: []
+  S-DIAG-LOGIN-01:
+    text: "Okay — please don't tell me your password or OTP. Is it showing an error, or just not accepting the login?"
+    rephrase: false
+    variants: []
+  S-HUMAN-01:
+    text: "Of course — I'll arrange for someone from our support team to call you."
+    rephrase: true
+    variants: []
+  S-HUMAN-ISSUE:
+    text: "I'm sorry you're dealing with that. I'll have someone from our support team follow up with you."
+    rephrase: true
+    variants: []
+  S-HUMAN-HAVE-CB:
+    text: "They'll call you {spoken_datetime}."
+    rephrase: false
+    variants: []
+  S-HUMAN-ASAP:
+    text: "No problem — they'll reach out during working hours."
+    rephrase: true
+    variants: []
+  S-CASE-EXISTS:
+    text: "I can see this has already been raised — I've added today's details for the team."
+    rephrase: true
+    variants: []
+  S-CASE-REF:
+    text: "Your reference is {short_ref}."
+    rephrase: false
+    variants: []
+  S-BUSY-01:
+    text: "No problem. When would be a better time to call you back?"
+    rephrase: true
+    variants: []
+  S-QUICK-01:
+    text: "Sure — just update the Town Bank app from the Play Store or App Store when you get a moment. Would a callback help, or is that enough?"
+    rephrase: true
+    variants: []
+  S-CB-ASK:
+    text: "Sure — when would be a good time to call you back?"
+    rephrase: true
+    variants: []
+  S-CB-ASK-TIME:
+    text: "What time on {day} works for you?"
+    rephrase: true
+    variants: []
+  S-CB-ASK-DAY:
+    text: "Which day works best?"
+    rephrase: true
+    variants: []
+  S-CB-PAST:
+    text: "That time's already passed today — would {suggestion} work?"
+    rephrase: true
+    variants: []
+  S-CB-WINDOW:
+    text: "We can call between 9 AM and 8 PM — would {suggestion} work?"
+    rephrase: true
+    variants: []
+  S-CB-SUNDAY:
+    text: "We don't call on Sundays — would {monday_suggestion} work?"
+    rephrase: true
+    variants: []
+  S-CB-CHOOSE:
+    text: "Would {option_a} work, or do you prefer {option_b}?"
+    rephrase: true
+    variants: []
+  S-CB-DEFAULT:
+    text: "Shall I put you down for {default}? You can always change it when we call."
+    rephrase: true
+    variants: []
+  S-CB-LATENIGHT:
+    text: "Just to check — do you mean later today, {weekday_1}, or {weekday_2}?"
+    rephrase: true
+    variants: []
+  S-CB-CONFIRM:
+    text: "So that's {spoken_datetime} — does that work?"
+    rephrase: false
+    variants: []
+  S-CB-DONE:
+    text: "Done — we'll call you {spoken_datetime}."
+    rephrase: false
+    variants: []
+  S-CB-MOVED:
+    text: "Sure — moved to {spoken_datetime}. Does that work?"
+    rephrase: false
+    variants: []
+  S-CB-CANCELLED:
+    text: "Okay, I've cancelled that callback."
+    rephrase: false
+    variants: []
+  S-CB-EXISTS:
+    text: "You already have a call from us on {spoken_datetime} — would you like to keep that or change it?"
+    rephrase: true
+    variants: []
+  S-CB-OFFER-LOOP:
+    text: "It sounds like now may not be ideal — shall I call you back at a better time?"
+    rephrase: true
+    variants: []
+  S-DECLINE-01:
+    text: "I understand. The update mainly keeps the app secure and working properly — would you like the quick steps, or shall I leave it there?"
+    rephrase: true
+    variants: []
+  S-DECLINE-END:
+    text: "No problem at all. Thanks for your time, and have a good day."
+    rephrase: true
+    variants: []
+  S-OPTOUT-01:
+    text: "Understood — I'll make sure you're not called about this again."
+    rephrase: false
+    variants: []
+  S-OPTOUT-HELP:
+    text: "Understood, I won't call about this again. Sorry about the crash — does it close straight away, or after you log in?"
+    rephrase: true
+    variants: []
+  S-OPTOUT-END:
+    text: "Sorry for the trouble, and take care."
+    rephrase: true
+    variants: []
+  S-FRAUD-01:
+    text: "I'm sorry — that sounds worrying, and it's important to act quickly."
+    rephrase: false
+    variants: []
+  S-FRAUD-02:
+    text: "Please call Town Bank's official helpline on the number on your card, or block your card from the official app, right away."
+    rephrase: false
+    variants: []
+  S-FRAUD-03:
+    text: "I've also flagged this for our team to follow up with you urgently."
+    rephrase: false
+    variants: []
+  S-FRAUD-END:
+    text: "Please make that call now — take care."
+    rephrase: false
+    variants: []
+  S-SENS-INTERRUPT:
+    text: "Sorry to interrupt — please don't share that code with me."
+    rephrase: false
+    variants: []
+  S-SENS-01:
+    text: "Please don't share your OTP, PIN, password or CVV with me — Town Bank will never ask for those on a call."
+    rephrase: false
+    variants: []
+  S-SENS-CONT:
+    text: "That's okay, we can carry on."
+    rephrase: false
+    variants: []
+  S-SENS-REPEAT:
+    text: "Just a reminder — no codes or passwords needed for this."
+    rephrase: false
+    variants: []
+  S-SENS-ADVICE-CHANGE:
+    text: "If you've shared a code or PIN with anyone, it's a good idea to change it through the official app or by calling the number on your card."
+    rephrase: false
+    variants: []
+  S-OFFTOPIC-01:
+    text: "I'm only able to help with the Town Bank app today."
+    rephrase: true
+    variants: []
+  S-ABUSE-01:
+    text: "I'd like to help, but let's keep it respectful."
+    rephrase: false
+    variants: []
+  S-ABUSE-END:
+    text: "I'll end the call here. Have a good day."
+    rephrase: false
+    variants: []
+  S-SIL-01:
+    text: "Hello, can you hear me?"
+    rephrase: true
+    variants: []
+  S-SIL-02:
+    text: "It seems the line isn't clear — would a callback at a better time help?"
+    rephrase: true
+    variants: []
+  S-SIL-END:
+    text: "I'll try again another time. Goodbye."
+    rephrase: true
+    variants: []
+  S-NOHEAR-01:
+    text: "Sorry, I didn't catch that — could you say it again?"
+    rephrase: true
+    variants: []
+  S-NOHEAR-02:
+    text: "Sorry, the line's a bit unclear."
+    rephrase: true
+    variants: []
+  S-END-OK:
+    text: "Thanks for your time, {first_name}. And remember, Town Bank will never ask for your PIN or OTP on a call. Have a good day!"
+    rephrase: false
+    variants: []
+  S-END-CB:
+    text: "Thanks — talk to you then. Have a good day!"
+    rephrase: true
+    variants: []
+  S-END-SHORT:
+    text: "Thanks, have a good day!"
+    rephrase: true
+    variants: []
+  S-FAIL-01:
+    text: "Sorry, I'm having a technical issue. Someone from Town Bank will call you back. Goodbye."
+    rephrase: false
+    variants: []
+  S-ACTION-FAIL:
+    text: "I wasn't able to set that up just now — our team will reach out to you."
+    rephrase: false
+    variants: []
+  S-OTHERNUM-01:
+    text: "For your security I can only call your registered number — you can update it through the app or at a branch."
+    rephrase: false
+    variants: []
+  S-DECEASED-01:
+    text: "I'm very sorry for your loss. I'll make sure our records are updated, and I won't call about this again."
+    rephrase: false
+    variants: []
+  S-LANG-01:
+    text: "I'm sorry, I can only speak English right now — I'll keep it simple, or I can arrange a callback from our team."
+    rephrase: false
+    variants: []
+  S-REPEAT:
+    text: "Sure — {last_line}."
+    rephrase: false
+    variants: []

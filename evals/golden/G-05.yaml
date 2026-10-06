@@ -1,0 +1,19 @@
+id: G-05
+title: Fraud + opt-out in one sentence
+clock: 2026-10-06T14:30:00+05:30
+customer_ref: C48291
+first_name: Rahul
+turns:
+  - subbu: S-OPEN-01
+  - customer: "yes"
+    expect: {intent: IDENTITY_CONFIRMED}
+  - customer: "stop calling me, someone took money from my account yesterday"
+    expect:
+      intent: FRAUD_REPORT
+      secondary: [OPT_OUT]
+      actions: [create_case, record_opt_out]
+      subbu: [S-FRAUD-01, S-FRAUD-02, S-FRAUD-03]
+      subbu_not_contains: ["your account is safe", "this is fraud", "how much"]
+  - customer: "okay"
+    expect: {subbu: S-FRAUD-END, next_state: CALL_ENDED}
+final: {outcome: FRAUD_ESCALATION, case: {case_type: SECURITY, priority: URGENT}, opt_out: true}

@@ -1,0 +1,27 @@
+id: G-01
+title: Happy path, customer interrupts during instructions
+clock: 2026-10-06T14:30:00+05:30
+customer_ref: C48291
+first_name: Rahul
+turns:
+  - subbu: S-OPEN-01
+  - customer: "yes speaking"
+    expect: {intent: IDENTITY_CONFIRMED, next_state: PERMISSION_CHECK, subbu: S-PURPOSE-01}
+  - customer: "sure"
+    expect: {intent: AFFIRM, next_state: APP_STATUS_CHECK, subbu: S-APP-01}
+  - customer: "yes it's there"
+    expect: {intent: AFFIRM, subbu: S-APP-02}
+  - customer: "no not updated"
+    expect: {intent: DENY, next_state: UPDATE_GUIDANCE, subbu: S-UPD-01}
+  - customer: "wait wait one second"
+    barge_in_during: S-UPD-01
+    expect: {intent: WAIT, tts_stopped: true, next_state: UPDATE_GUIDANCE}
+  - customer: "okay done updated"
+    expect: {intent: APP_UPDATE_SUCCESS, next_state: ISSUE_CHECK, subbu: [S-UPD-OK, S-ISSUE-01]}
+  - customer: "no that's all"
+    expect: {intent: DENY, next_state: CALL_ENDED, subbu: S-END-OK}
+final:
+  outcome: COMPLETED_SUCCESSFULLY
+  cases: 0
+  callbacks: 0
+  flags: {ai_disclosed: true, identity_confirmed: true}
