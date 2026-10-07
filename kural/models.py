@@ -74,7 +74,7 @@ class TurnRequest(BaseModel):
 
 
 class SessionCreateRequest(BaseModel):
-    customer_ref: Literal["CUST001", "demo-001", "demo-002"] = "demo-001"
+    customer_ref: str = Field(default="demo-001", max_length=64)
 
 
 class TurnResponse(BaseModel):

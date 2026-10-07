@@ -48,6 +48,12 @@ def create_session(request: Request, payload: SessionCreateRequest | None = None
         conversation, greeting = KuralEngine(_repository(request)).create_session(customer_ref)
     except KeyError as error:
         raise HTTPException(status_code=400, detail="Unknown synthetic customer reference") from error
+    call_svc = getattr(request.app.state, "call_service", None)
+    if call_svc:
+        try:
+            call_svc.create_call_record(session_id=conversation.session_id, customer_ref=conversation.customer_ref)
+        except Exception:
+            pass
     return SessionResponse(session_id=conversation.session_id, state=conversation.state,
                            response=greeting, customer_ref=conversation.customer_ref)
 
@@ -56,11 +62,24 @@ def create_session(request: Request, payload: SessionCreateRequest | None = None
 @router.post("/sessions/{session_id}/turns", response_model=TurnResponse, include_in_schema=False)
 def submit_message(session_id: str, payload: TurnRequest, request: Request) -> TurnResponse:
     try:
-        return KuralEngine(
+        turn = KuralEngine(
             _repository(request), llm_provider=request.app.state.llm_provider,
         ).turn(
             session_id, payload.text, payload.confidence, payload.requested_at,
         )
+        call_svc = getattr(request.app.state, "call_service", None)
+        if call_svc and getattr(turn, "ended", False):
+            try:
+                call_svc.update_call_by_session(session_id, {
+                    "disposition": getattr(turn, "intent", None),
+                    "status": "COMPLETED",
+                    "kural_state": getattr(turn, "state", None),
+                    "callback_id": getattr(turn, "callback_id", None),
+                    "escalation_id": getattr(turn, "case_id", None),
+                })
+            except Exception:
+                pass
+        return turn
     except KeyError as error:
         raise HTTPException(status_code=404, detail="Session not found") from error
 

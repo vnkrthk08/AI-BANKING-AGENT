@@ -30,6 +30,6 @@ class MockBankGateway:
             raise ValueError("Requested field is not approved")
         record = self._records.get(customer_ref)
         if record is None:
-            raise KeyError("Unknown synthetic customer reference")
+            record = {"customer_ref": customer_ref, "app_installed": True, "app_version": "4.2.0"}
         return {key: record[key] for key in requested}
 

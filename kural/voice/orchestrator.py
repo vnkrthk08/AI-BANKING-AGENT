@@ -43,6 +43,7 @@ class RealtimeVoiceOrchestrator:
         self._closed = asyncio.Event()
         self._session_id = ""
         self._is_opening_greeting = False
+        self._pcm_buffer: bytearray = bytearray()
 
     async def _send_json(self, payload: dict[str, Any]) -> None:
         async with self._send_lock:
@@ -104,6 +105,26 @@ class RealtimeVoiceOrchestrator:
                 *(task for task in (reader, receiver, closed_waiter, self._tts_task) if task is not None),
                 return_exceptions=True,
             )
+            if self._pcm_buffer:
+                try:
+                    from kural.services.recording_service import save_pcm_to_wav
+                    save_pcm_to_wav(self._session_id, bytes(self._pcm_buffer))
+                except Exception:
+                    pass
+            try:
+                db = getattr(self.repository, "database", None)
+                if db is not None:
+                    from sqlalchemy import select
+                    from kural.persistence.models import CallRecordRow
+                    with db.session() as s:
+                        cr = s.scalar(select(CallRecordRow).where(CallRecordRow.session_id == self._session_id))
+                        if cr:
+                            cr.duration_sec = int(time.perf_counter() - call_started)
+                            cr.recording_available = True
+                            cr.status = "COMPLETED"
+                            s.commit()
+            except Exception:
+                pass
 
     async def _read_microphone(self, call_started: float) -> None:
         while not self._closed.is_set():
@@ -115,6 +136,7 @@ class RealtimeVoiceOrchestrator:
                 if not pcm or len(pcm) > MAX_PCM_MESSAGE_BYTES or len(pcm) % 2:
                     await self._send_json({"type": "voice_error", "detail": "Invalid microphone audio frame."})
                     continue
+                self._pcm_buffer.extend(pcm)
                 if self._first_pcm_at is None:
                     self._first_pcm_at = time.perf_counter()
                     await self._timing("mic_audio_start", call_started, log=True)

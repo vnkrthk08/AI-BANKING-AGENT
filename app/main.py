@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
 from kural.api import dashboard_router, router
+from kural.api_operations import operations_router
 from kural.persistence.database import Database
 from kural.persistence.repository import SqlAlchemyKuralRepository
 from kural.repositories import KuralRepository
@@ -13,6 +14,13 @@ from kural.providers.config import create_llm_provider
 from kural.providers.contracts import LLMProvider
 from kural.providers.voice_config import create_realtime_stt_provider, create_stt_provider, create_tts_provider
 from kural.providers.contracts import RealtimeSTTProvider, STTProvider, TTSProvider
+from kural.services.agent_service import AgentService
+from kural.services.call_service import CallService
+from kural.services.callback_service import CallbackService
+from kural.services.campaign_service import CampaignService
+from kural.services.case_service import CaseService
+from kural.services.customer_service import CustomerService
+from kural.services.report_service import ReportService
 
 
 def create_app(repository: KuralRepository | None = None,
@@ -26,14 +34,15 @@ def create_app(repository: KuralRepository | None = None,
         from datetime import datetime, timezone
         from sqlalchemy import select
         from kural.persistence.models import CallbackRow
+        from kural.services.event_bus import event_bus
 
         stop_worker = asyncio.Event()
 
         async def callback_scheduler_worker():
-            """Polls callbacks table every 20s for due callbacks so they reflect in dashboard."""
+            """Polls callbacks table every 10s for due callbacks so they reflect in dashboard."""
             while not stop_worker.is_set():
                 try:
-                    await asyncio.sleep(20)
+                    await asyncio.sleep(10)
                     db = getattr(app.state, "database", None)
                     if db is not None:
                         with db.session() as s:
@@ -47,6 +56,7 @@ def create_app(repository: KuralRepository | None = None,
                             ).all()
                             for cb in due:
                                 cb.status = "DUE"
+                                event_bus.publish("callback_due", {"callback_id": cb.callback_id})
                             if due:
                                 s.commit()
                 except asyncio.CancelledError:
@@ -54,11 +64,37 @@ def create_app(repository: KuralRepository | None = None,
                 except Exception:
                     pass
 
-        worker_task = asyncio.create_task(callback_scheduler_worker())
+        async def campaign_pacing_worker():
+            """Polls active campaigns and processes queued contacts in background."""
+            while not stop_worker.is_set():
+                try:
+                    await asyncio.sleep(5)
+                    camp_svc = getattr(app.state, "campaign_service", None)
+                    if camp_svc is not None:
+                        active_camps = camp_svc.list_campaigns(status="ACTIVE")
+                        for camp in active_camps:
+                            queued = camp_svc.get_queued_contacts(camp["id"], batch_size=2)
+                            for contact in queued:
+                                import random
+                                disp = random.choice(["CLOSED", "CLOSED", "CALLBACK_SCHEDULED", "BUSY", "NO_ANSWER"])
+                                camp_svc.record_attempt(contact["contact_id"], disp, f"sim-{contact['contact_id']}")
+                                event_bus.publish("campaign_progress", {
+                                    "campaign_id": camp["id"],
+                                    "contact_id": contact["contact_id"],
+                                    "disposition": disp,
+                                })
+                except asyncio.CancelledError:
+                    break
+                except Exception:
+                    pass
+
+        cb_task = asyncio.create_task(callback_scheduler_worker())
+        camp_task = asyncio.create_task(campaign_pacing_worker())
         yield
         stop_worker.set()
-        worker_task.cancel()
-        await asyncio.gather(worker_task, return_exceptions=True)
+        cb_task.cancel()
+        camp_task.cancel()
+        await asyncio.gather(cb_task, camp_task, return_exceptions=True)
 
         close = getattr(app.state.tts_provider, "close", None)
         if close is not None:
@@ -70,7 +106,7 @@ def create_app(repository: KuralRepository | None = None,
     app = FastAPI(
         title="KURAL AVA",
         description="KURAL decision API for the AVA browser demo. Synthetic data only; not for production use.",
-        version="0.2.0",
+        version="0.3.0",
         lifespan=lifespan,
     )
     if repository is None:
@@ -85,10 +121,16 @@ def create_app(repository: KuralRepository | None = None,
     from kural.persistence.models import Base
     Base.metadata.create_all(app.state.database.engine)
     app.state.repository = repository
-    from kural.services.callback_service import CallbackService
-    from kural.services.case_service import CaseService
     app.state.callback_service = CallbackService(app.state.database)
     app.state.case_service = CaseService(app.state.database)
+    app.state.customer_service = CustomerService(app.state.database)
+    app.state.campaign_service = CampaignService(app.state.database)
+    app.state.call_service = CallService(app.state.database)
+    app.state.agent_service = AgentService(app.state.database)
+    app.state.report_service = ReportService(app.state.database)
+
+    _seed_demo_operations(app.state.campaign_service, app.state.customer_service, app.state.call_service)
+
     app.state.llm_provider = llm_provider if llm_provider is not None else create_llm_provider()
     app.state.stt_provider = stt_provider if stt_provider is not None else create_stt_provider()
     app.state.tts_provider = tts_provider if tts_provider is not None else create_tts_provider()
@@ -97,6 +139,7 @@ def create_app(repository: KuralRepository | None = None,
     )
     app.include_router(router)
     app.include_router(dashboard_router)
+    app.include_router(operations_router)
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def root() -> str:
@@ -113,6 +156,45 @@ def create_app(repository: KuralRepository | None = None,
         return {"status": "ok", "service": "kural-ava", "mode": "prototype"}
 
     return app
+
+
+def _seed_demo_operations(camp_svc: CampaignService, cust_svc: CustomerService, call_svc: CallService) -> None:
+    try:
+        existing_camps = camp_svc.list_campaigns()
+        if not existing_camps:
+            c1 = camp_svc.create_campaign(
+                name="App adoption · Q4",
+                objective="App adoption",
+                script_version="v2.4",
+                segment_size=8200,
+                max_attempts=3,
+                retry_gap_hours=24,
+                languages=["Hindi", "English", "Tamil"],
+                region="All India",
+                status="ACTIVE",
+            )
+            c2 = camp_svc.create_campaign(
+                name="App update follow-up",
+                objective="App update",
+                script_version="v1.8",
+                segment_size=3400,
+                max_attempts=2,
+                retry_gap_hours=36,
+                languages=["English", "Kannada", "Telugu"],
+                region="South",
+                status="ACTIVE",
+            )
+            cust1 = cust_svc.create_customer("Rajesh Sharma", "9876543210", "CUST-00001", preferred_language="Hindi", branch="Delhi NCR", region="North", app_status="INSTALLED", app_version="4.9.2")
+            cust2 = cust_svc.create_customer("Priya Sundaram", "9876543211", "CUST-00002", preferred_language="Tamil", branch="Chennai South", region="South", app_status="NOT_INSTALLED")
+            cust3 = cust_svc.create_customer("Amit Patel", "9876543212", "CUST-00003", preferred_language="Hindi", branch="Mumbai Metro", region="West", app_status="OUTDATED", app_version="4.7.0")
+            cust_svc.create_customer("Sneha Reddy", "9876543213", "CUST-00004", preferred_language="Telugu", branch="Hyderabad Central", region="South", app_status="INSTALLED", app_version="5.0.0")
+            cust_svc.create_customer("Rahul Mukherjee", "9876543214", "CUST-00005", preferred_language="Bengali", branch="Kolkata East", region="East", app_status="NOT_INSTALLED")
+
+            camp_svc.add_contact(c1["id"], cust1["customer_ref"], cust1["phone"])
+            camp_svc.add_contact(c1["id"], cust2["customer_ref"], cust2["phone"])
+            camp_svc.add_contact(c1["id"], cust3["customer_ref"], cust3["phone"])
+    except Exception:
+        pass
 
 
 app = create_app()
