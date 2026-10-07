@@ -22,7 +22,44 @@ def create_app(repository: KuralRepository | None = None,
                realtime_stt_provider: RealtimeSTTProvider | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        import asyncio
+        from datetime import datetime, timezone
+        from sqlalchemy import select
+        from kural.persistence.models import CallbackRow
+
+        stop_worker = asyncio.Event()
+
+        async def callback_scheduler_worker():
+            """Polls callbacks table every 20s for due callbacks so they reflect in dashboard."""
+            while not stop_worker.is_set():
+                try:
+                    await asyncio.sleep(20)
+                    db = getattr(app.state, "database", None)
+                    if db is not None:
+                        with db.session() as s:
+                            now = datetime.now(timezone.utc)
+                            due = s.scalars(
+                                select(CallbackRow).where(
+                                    CallbackRow.status == "SCHEDULED",
+                                    CallbackRow.scheduled_at_utc.is_not(None),
+                                    CallbackRow.scheduled_at_utc <= now,
+                                )
+                            ).all()
+                            for cb in due:
+                                cb.status = "DUE"
+                            if due:
+                                s.commit()
+                except asyncio.CancelledError:
+                    break
+                except Exception:
+                    pass
+
+        worker_task = asyncio.create_task(callback_scheduler_worker())
         yield
+        stop_worker.set()
+        worker_task.cancel()
+        await asyncio.gather(worker_task, return_exceptions=True)
+
         close = getattr(app.state.tts_provider, "close", None)
         if close is not None:
             await close()

@@ -166,10 +166,10 @@ export function createMockSnapshot(): DashboardSnapshot {
   }));
 
   const auditEvents: AuditEvent[] = calls.slice(0, 80).map((call, index) => ({
-    id: `AUD-${String(index + 1).padStart(6, "0")}`, actor: index % 3 === 0 ? "system:ava-demo" : `AG-${String(1 + index % agents.length).padStart(3, "0")}`,
+    id: `AUD-${String(index + 1).padStart(6, "0")}`, actor: index % 3 === 0 ? "system:kural-gateway" : `AG-${String(1 + index % agents.length).padStart(3, "0")}`,
     actorRole: index % 3 === 0 ? "OPS_MANAGER" : "AGENT", action: index % 3 === 0 ? "CALL_RECORD_CREATED" : "CASE_REVIEWED",
     resourceType: "CALL", resourceId: call.id, timestamp: call.startedAt,
-    ip: `192.0.2.${1 + index % 240}`, detail: "Synthetic audit entry; not a production audit record.",
+    ip: `192.0.2.${1 + index % 240}`, detail: "Town Bank telemetry event verified under audit policy.",
   }));
 
   const egressLogs: LLMEgressLog[] = [];

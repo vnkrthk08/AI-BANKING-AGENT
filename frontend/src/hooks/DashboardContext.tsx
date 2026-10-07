@@ -33,7 +33,32 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     } finally { setLoading(false); }
   }
 
-  useEffect(() => { void refresh(); }, []);
+  useEffect(() => {
+    void refresh();
+
+    let eventSource: EventSource | null = null;
+    try {
+      eventSource = new EventSource("/api/events/sse");
+      eventSource.onmessage = () => {
+        void refresh();
+      };
+      eventSource.addEventListener("callback.created", () => void refresh());
+      eventSource.addEventListener("callback.updated", () => void refresh());
+      eventSource.addEventListener("case.created", () => void refresh());
+      eventSource.addEventListener("demo_reset", () => {
+        localStorage.removeItem("kural-ops-cases-demo-v1");
+        localStorage.removeItem("kural-ops-callbacks-demo-v1");
+        localStorage.removeItem("kural-ops-campaigns-demo-v1");
+        void refresh();
+      });
+    } catch {
+      /* EventSource unavailable */
+    }
+
+    return () => {
+      eventSource?.close();
+    };
+  }, []);
   const value = useMemo(() => ({ snapshot, loading, error, mode: dashboardApi.mode, filters, setFilters, refresh }), [snapshot, loading, error, filters]);
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }

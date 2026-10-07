@@ -97,8 +97,18 @@ class SqlAlchemyKuralRepository(KuralRepository):
             CaseRow.session_id == row.session_id).order_by(CaseRow.created_at.desc()).limit(1))
         callback_id = session.scalar(select(CallbackRow.callback_id).where(
             CallbackRow.session_id == row.session_id).order_by(CallbackRow.created_at.desc()).limit(1))
-        return Conversation(row.session_id, row.customer_ref, State(row.current_state),
+        conv = Conversation(row.session_id, row.customer_ref, State(row.current_state),
                             row.created_at, row.updated_at, turn_count, case_id, callback_id)
+        ctx = getattr(row, "context_json", None) or {}
+        conv.detour_depth = ctx.get("detour_depth", 0)
+        conv.return_state = State(ctx["return_state"]) if ctx.get("return_state") else None
+        conv.known_customer_facts = dict(ctx.get("known_customer_facts", {}))
+        conv.unknown_required_fields = list(ctx.get("unknown_required_fields", []))
+        conv.active_question = ctx.get("active_question")
+        conv.active_issue = ctx.get("active_issue")
+        conv.conversation_summary = ctx.get("conversation_summary", "")
+        conv.recent_relevant_turns = list(ctx.get("recent_relevant_turns", []))
+        return conv
 
 
 class SqlAlchemyUnitOfWork(RepositoryTransaction):
@@ -108,7 +118,7 @@ class SqlAlchemyUnitOfWork(RepositoryTransaction):
     def create_session(self, session_id: str, customer_ref: str, state: State) -> Conversation:
         now = datetime.now(timezone.utc)
         row = SessionRow(session_id=session_id, customer_ref=customer_ref,
-                         current_state=state.value, created_at=now, updated_at=now)
+                         current_state=state.value, context_json={}, created_at=now, updated_at=now)
         self.session.add(row)
         self.session.flush()
         return Conversation(session_id, customer_ref, state, now, now, 0)
@@ -123,6 +133,23 @@ class SqlAlchemyUnitOfWork(RepositoryTransaction):
         if row is None:
             raise KeyError("Session not found")
         row.current_state = state.value
+        row.updated_at = datetime.now(timezone.utc)
+
+    def update_session(self, conversation: Conversation) -> None:
+        row = self.session.get(SessionRow, conversation.session_id)
+        if row is None:
+            raise KeyError("Session not found")
+        row.current_state = conversation.state.value
+        row.context_json = {
+            "detour_depth": conversation.detour_depth,
+            "return_state": conversation.return_state.value if conversation.return_state else None,
+            "known_customer_facts": conversation.known_customer_facts,
+            "unknown_required_fields": conversation.unknown_required_fields,
+            "active_question": conversation.active_question,
+            "active_issue": conversation.active_issue,
+            "conversation_summary": conversation.conversation_summary,
+            "recent_relevant_turns": conversation.recent_relevant_turns,
+        }
         row.updated_at = datetime.now(timezone.utc)
 
     def add_turn(self, session_id: str, turn_order: int, text: str, intent: str,

@@ -107,10 +107,10 @@ class SarvamRealtimeSTTAdapter:
             endpointing="vad",
             encoding="linear16",
             sample_rate="16000",
-            threshold="0.3",
-            prefix_padding_ms="200",
-            silence_duration_ms="500",
-            min_speech_duration_ms="250",
+            threshold="0.65",
+            prefix_padding_ms="300",
+            silence_duration_ms="600",
+            min_speech_duration_ms="350",
             request_options={"max_retries": 0},
         ) as websocket:
             yield SarvamRealtimeSTTSession(websocket)
@@ -200,6 +200,13 @@ class SarvamTTSAdapter:
                 last_error = error
                 await self._reset_connection(codec)
         raise SarvamConfigurationError("Sarvam TTS WebSocket connection failed") from last_error
+
+    async def prewarm(self, codec: str = "linear16") -> None:
+        """Pre-warm the realtime WebSocket connection to eliminate first-turn setup lag."""
+        try:
+            await self._ensure_connection(codec)
+        except Exception:
+            pass
 
     async def _reset_connection(self, codec: str) -> None:
         context = self._connection_contexts.pop(codec, None)

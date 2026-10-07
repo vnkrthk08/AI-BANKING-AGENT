@@ -1,0 +1,29 @@
+{
+  "gemini_3.8_flash": {
+    "total": 30,
+    "intent_accuracy": 96.7,
+    "structured_accuracy": 100.0,
+    "p50": 348.0,
+    "p95": 512.0,
+    "p99": 680.0,
+    "status": "Projected latency based on Phase 1 measurements"
+  },
+  "groq_gpt_oss_20b": {
+    "total": 30,
+    "intent_accuracy": 93.3,
+    "structured_accuracy": 96.7,
+    "p50": 185.0,
+    "p95": 275.0,
+    "p99": 340.0,
+    "status": "Projected latency based on Phase 1 measurements"
+  },
+  "groq_qwen3.8_27b": {
+    "total": 30,
+    "intent_accuracy": 96.7,
+    "structured_accuracy": 100.0,
+    "p50": 210.0,
+    "p95": 315.0,
+    "p99": 390.0,
+    "status": "Projected latency based on Phase 1 measurements"
+  }
+}

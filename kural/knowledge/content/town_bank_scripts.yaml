@@ -454,3 +454,20 @@ scripts:
     text: "Sure — {last_line}."
     rephrase: false
     variants: []
+  S-FEAT-01:
+    text: "The Town Bank app lets you manage accounts, send instant UPI payments, and lock your debit card with one tap."
+    rephrase: true
+    variants: []
+  S-SAFE-01:
+    text: "Yes, it uses bank-grade security, and we will never ask for your PIN, OTP or password."
+    rephrase: false
+    variants: []
+  S-FREE-01:
+    text: "Yes, the Town Bank mobile app and all its updates are completely free of charge."
+    rephrase: true
+    variants: []
+  S-CLARIFY-01:
+    text: "Sorry, I didn't quite catch that. Could you please answer yes or no?"
+    rephrase: true
+    variants: []
+

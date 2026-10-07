@@ -192,4 +192,11 @@ export const kuralApi = {
   },
   session: (sessionId: string) => request<SessionDetail>(`/api/v1/sessions/${encodeURIComponent(sessionId)}`),
   cases: () => request<CaseRecord[]>("/api/v1/cases"),
+  resetDemo: () =>
+    request<{ status: string; message: string }>("/api/demo/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }),
 };
+

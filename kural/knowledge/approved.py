@@ -12,3 +12,6 @@ SUPPORT_WORDING = default_script_store.get_line("S-HUMAN-01")
 CALLBACK_ACKNOWLEDGEMENT = "Done — we'll arrange a callback and call you tomorrow at your preferred time."
 OPT_OUT_ACKNOWLEDGEMENT = default_script_store.get_line("S-OPTOUT-01") + " " + default_script_store.get_line("S-OPTOUT-END")
 
+from kural.knowledge.kb import DEMO_KNOWLEDGE_BASE, PRODUCTION_KNOWLEDGE_BASE, KnowledgeArticle, KnowledgeSource
+from kural.knowledge.retriever import DeterministicLexicalRetriever, KnowledgeResult, default_retriever
+

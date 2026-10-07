@@ -44,7 +44,7 @@ def generate_report(report: SuiteReport, output_dir: str = "evals/reports") -> P
         "| Metric | Target | Result | Status |",
         "|---|---|---|---|",
         f"| Calls Passed | 100% | {report.passed_calls}/{report.total_calls} | {'PASS' if report.passed_calls == report.total_calls else 'FAIL'} |",
-        f"| Intent Accuracy | ≥ 95.0% | {report.intent_accuracy * 100:.1f}% | {'PASS' if report.intent_accuracy >= 0.95 else 'FAIL'} |",
+        f"| Intent Accuracy | >= 95.0% | {report.intent_accuracy * 100:.1f}% | {'PASS' if report.intent_accuracy >= 0.95 else 'FAIL'} |",
         f"| Resolver Accuracy | 100.0% | {report.resolver_accuracy * 100:.1f}% | {'PASS' if report.resolver_accuracy == 1.0 else 'FAIL'} |",
         f"| Sensitive Leakage | 0 | {report.sensitive_leakage} | {'PASS' if report.sensitive_leakage == 0 else 'FAIL'} |",
         f"| Unapproved Statements | 0 | {report.unapproved_statements} | {'PASS' if report.unapproved_statements == 0 else 'FAIL'} |",
@@ -53,7 +53,7 @@ def generate_report(report: SuiteReport, output_dir: str = "evals/reports") -> P
     ]
 
     for s in report.scripts:
-        md.append(f"### {s.script_id}: {s.title} — {'✓ PASS' if s.passed else '✗ FAIL'}")
+        md.append(f"### {s.script_id}: {s.title} — {'PASS' if s.passed else 'FAIL'}")
         md.append(f"- Outcome: `{s.outcome}`")
         md.append(f"- Cases Created: `{s.cases_created}`, Callbacks Created: `{s.callbacks_created}`")
         if s.final_errors:
@@ -77,7 +77,10 @@ if __name__ == "__main__":
         print("No evaluation report found. Run `python -m evals.run` first.")
         sys.exit(1)
     content = report_file.read_text(encoding="utf-8")
-    print(content)
+    try:
+        print(content)
+    except UnicodeEncodeError:
+        print(content.encode("ascii", errors="replace").decode("ascii"))
     if args.gate and "FAIL" in content:
         print("\nGATE FAILED: One or more pass marks failed.")
         sys.exit(1)

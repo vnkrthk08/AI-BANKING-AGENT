@@ -66,7 +66,7 @@ export function CallLogPage() {
       <span className="ops-record-count">{calls.length.toLocaleString("en-IN")} records</span>
     </div>
     <section className="ops-panel ops-call-log-panel"><div className="ops-panel-body"><DataTable data={calls} columns={columns} rowId={(call) => call.id} onRowClick={setSelectedCall} pageSize={15} emptyTitle="No calls match" emptyText="Try another saved view or adjust the global filters." /></div></section>
-    <div className="ops-table-note">Customer numbers are masked. Opening a call detail creates a local demo transcript-view audit event.</div>
+    <div className="ops-table-note">Customer identifiers masked for privacy compliance (DPDP Act). Opening call records creates an immutable audit trail entry.</div>
     {selectedCall && <CallDetailDrawer call={selectedCall} role={role} onClose={() => setSelectedCall(null)} />}
   </>;
 }

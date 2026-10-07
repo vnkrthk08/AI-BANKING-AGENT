@@ -15,6 +15,7 @@ class SupportCase:
     callback_requested: bool
     created_at: datetime
     updated_at: datetime
+    raw_customer_quote: str = ""
 
 
 @dataclass(frozen=True)

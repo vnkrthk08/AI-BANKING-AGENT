@@ -17,6 +17,21 @@ from kural.privacy.redactor import (
 
 SENSITIVE_LABEL = re.compile(r"\b(?:otp|one[- ]time password|pin|mpin|password|cvv|cvc)\b", re.I)
 
+PROMPT_INJECTION_RE = re.compile(
+    r"\b(?:"
+    r"ignore\s+(?:all\s+)?(?:your\s+)?instructions|"
+    r"disregard\s+(?:all\s+)?(?:previous\s+)?instructions|"
+    r"(?:give|show|tell|reveal|what\s+is)\s+(?:me\s+)?(?:your\s+)?(?:system\s+)?prompt|"
+    r"export\s+(?:the\s+)?database|"
+    r"dump\s+(?:the\s+)?database|"
+    r"show\s+(?:me\s+)?another\s+customer|"
+    r"jailbreak|"
+    r"dan\s+mode|"
+    r"bypass\s+(?:rules|security)"
+    r")\b",
+    re.I,
+)
+
 
 @dataclass(frozen=True)
 class SafetyResult:
@@ -28,7 +43,17 @@ class SafetyResult:
 
 
 def inspect_input(text: str) -> SafetyResult:
-    """Screen text for sensitive authentication data."""
+    """Screen text for sensitive authentication data and prompt injection attempts."""
+    # Check for prompt injection attempts first
+    if PROMPT_INJECTION_RE.search(text):
+        return SafetyResult(
+            blocked=True,
+            redacted_text="[BLOCKED PROMPT INJECTION ATTEMPT]",
+            reason="prompt_injection_attempt",
+            sensitive_types=["prompt_injection"],
+            sensitive_count=1,
+        )
+
     redaction = redact_sensitive_data(text)
     return SafetyResult(
         blocked=redaction.sensitive_present,

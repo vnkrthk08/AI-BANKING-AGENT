@@ -34,7 +34,7 @@ export interface SessionDetail {
 
 export interface TranscriptMessage {
   id: string;
-  speaker: "AVA" | "CUSTOMER";
+  speaker: "AVA" | "CUSTOMER" | "Subbu";
   text: string;
   time: string;
   redacted?: boolean;

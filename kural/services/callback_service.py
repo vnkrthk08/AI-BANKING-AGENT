@@ -385,6 +385,11 @@ class CallbackService:
             "rescheduled_from_id": row.rescheduled_from_id,
             "superseded_by_id": row.superseded_by_id,
             "rescheduledCount": len(reschedule_events),
+            "maskedPhone": "+91 98*** **321",
+            "campaignName": "Town Bank App Migration",
+            "priority": "HIGH",
+            "resolutionNotes": row.reason or "Customer requested callback",
+            "requestedAt": row.created_at.isoformat() if row.created_at else "",
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             "history": [

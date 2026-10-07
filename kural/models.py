@@ -2,7 +2,7 @@
 
 from enum import StrEnum
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Any
 from pydantic import BaseModel, Field
 
 
@@ -58,6 +58,15 @@ class Action(StrEnum):
     REQUEST_CALLBACK = "request_callback"
 
 
+class IssueCategory(StrEnum):
+    PAYMENT = "PAYMENT"
+    LOGIN = "LOGIN"
+    UPDATE_CRASH = "UPDATE_CRASH"
+    BIOMETRIC = "BIOMETRIC"
+    NETWORK = "NETWORK"
+    GENERAL = "GENERAL"
+
+
 class TurnRequest(BaseModel):
     text: str = Field(max_length=2000)
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
@@ -78,6 +87,12 @@ class TurnResponse(BaseModel):
     callback_id: str | None = None
     policy_decision: Literal["ALLOWED", "BLOCKED"] = "ALLOWED"
     sanitized_user_text: str = ""
+    secondary_question: str | None = None
+    entities: dict[str, Any] = Field(default_factory=dict)
+    fallback_used: bool = False
+    detour_depth: int = 0
+    knowledge_result: str | None = None
+
 
 
 class SessionResponse(BaseModel):

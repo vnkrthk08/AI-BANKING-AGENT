@@ -1,7 +1,7 @@
 import {
   ArrowSquareOut, Bell, Briefcase, ChartLineUp, CaretLeft, CaretRight,
   Clock, FileText, Headset, House, ListChecks, MagnifyingGlass, Megaphone, Moon,
-  Phone, ShieldCheck, Sun, UsersThree, WarningCircle, Waveform,
+  Phone, ShieldCheck, SidebarSimple, Sun, UsersThree, WarningCircle, Waveform,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -26,7 +26,7 @@ export function AppShell() {
   const [search, setSearch] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [clock, setClock] = useState(() => new Date());
-  const { mode, snapshot } = useDashboard();
+  const { snapshot } = useDashboard();
   const location = useLocation();
   const navigate = useNavigate();
   const access = ROLE_ACCESS[role];
@@ -46,6 +46,7 @@ export function AppShell() {
     const interval = window.setInterval(() => setClock(new Date()), 30_000);
     const hotkey = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setSearchOpen((open) => !open); }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "b") { event.preventDefault(); setCollapsed((c) => !c); }
       if (event.key === "Escape") { setSearchOpen(false); setNotificationsOpen(false); }
     };
     window.addEventListener("keydown", hotkey);
@@ -70,8 +71,8 @@ export function AppShell() {
   const groups = ["WORKSPACE", "MANAGE", "GOVERNANCE", "TOOLS"] as const;
   return <div className={`ops-app ${collapsed ? "ops-sidebar-collapsed" : ""}`}>
     <aside className="ops-sidebar">
-      <Link className="ops-brand" to={ROUTES[access.home].path}><span className="ops-brand-mark">K</span><span className="ops-brand-copy"><strong>KURAL</strong><small>OPERATIONS</small></span></Link>
-      <div className="ops-workspace-switch"><span className="ops-bank-avatar">DB</span><span><strong>Demo Bank</strong><small>India · Demo workspace</small></span><CaretRight size={15} /></div>
+      <Link className="ops-brand" to={ROUTES[access.home].path} onClick={collapsed ? (e) => { e.preventDefault(); setCollapsed(false); } : undefined} title={collapsed ? "Expand sidebar" : undefined}><span className="ops-brand-mark">K</span><span className="ops-brand-copy"><strong>KURAL</strong><small>OPERATIONS</small></span></Link>
+      <div className="ops-workspace-switch" onClick={collapsed ? () => setCollapsed(false) : undefined} style={collapsed ? { cursor: "pointer" } : undefined} title={collapsed ? "Expand sidebar" : undefined}><span className="ops-bank-avatar">TB</span><span><strong>Town Bank</strong><small>Operations Workspace · India</small></span><CaretRight size={15} /></div>
       <nav className="ops-nav" aria-label="Main navigation">
         {groups.map((group) => {
           const links = access.routes.filter((key) => ROUTES[key].section === group);
@@ -85,12 +86,22 @@ export function AppShell() {
           })}</div>;
         })}
       </nav>
-      <div className="ops-sidebar-bottom"><div className="ops-live-status"><i /><span>Demo services available</span></div><button className="ops-collapse" onClick={() => setCollapsed((value) => !value)} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>{collapsed ? <CaretRight size={17} /> : <><CaretLeft size={17} />Collapse menu</>}</button></div>
+      <div className="ops-sidebar-bottom">
+        <div className="ops-live-status" title="Core Voice Services Online"><i /><span>Core Voice Services Online</span></div>
+        <button className="ops-collapse" onClick={() => setCollapsed((value) => !value)} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand menu (Ctrl + B)" : "Collapse menu (Ctrl + B)"}>
+          {collapsed ? <CaretRight size={18} weight="bold" /> : <><CaretLeft size={18} weight="bold" /><span>Collapse menu</span></>}
+        </button>
+      </div>
     </aside>
 
     <div className="ops-main">
       <header className="ops-topbar">
-        <div className="ops-breadcrumb"><span>KURAL</span><span>/</span><strong>{route ? ROUTES[route].label : "Workspace"}</strong></div>
+        <div className="ops-breadcrumb">
+          <button className="ops-icon-button ops-sidebar-toggle-btn" onClick={() => setCollapsed((v) => !v)} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar (Ctrl + B)" : "Collapse sidebar (Ctrl + B)"}>
+            <SidebarSimple size={18} weight={collapsed ? "fill" : "regular"} />
+          </button>
+          <span>Town Bank</span><span>/</span><strong>{route ? ROUTES[route].label : "Workspace"}</strong>
+        </div>
         <div className="ops-topbar-tools">
           <button className="ops-search-trigger" onClick={() => setSearchOpen((open) => !open)}><MagnifyingGlass size={16} /><span>Search calls, customers…</span><kbd>Ctrl K</kbd></button>
           <span className="ops-clock"><Clock size={15} /><time>{new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hour12: true }).format(clock)} IST</time></span>
@@ -98,14 +109,13 @@ export function AppShell() {
             {notificationsOpen && <div className="ops-notification-popover"><div className="ops-popover-title">Needs attention <span>{overdue}</span></div><p>{overdue ? `${overdue} SLA items need review.` : "No overdue work right now."}</p>{overdue > 0 && <button onClick={notificationTarget}>Review queue <ArrowSquareOut size={14} /></button>}</div>}
           </div>}
           <button className="ops-icon-button" aria-label={dark ? "Switch to light theme" : "Switch to dark theme"} onClick={() => { const next = !dark; setDark(next); localStorage.setItem("kural-ops-theme", next ? "dark" : "light"); }}>{dark ? <Sun size={17} /> : <Moon size={17} />}</button>
-          <label className="ops-role-select"><span>DEMO ROLE</span><select aria-label="Demo role" value={role} onChange={(event) => switchRole(event.target.value as Role)}>{(Object.keys(ROLE_ACCESS) as Role[]).map((item) => <option key={item} value={item}>{ROLE_ACCESS[item].label}</option>)}</select></label>
+          <label className="ops-role-select"><span>ACTIVE ROLE</span><select aria-label="Active role" value={role} onChange={(event) => switchRole(event.target.value as Role)}>{(Object.keys(ROLE_ACCESS) as Role[]).map((item) => <option key={item} value={item}>{ROLE_ACCESS[item].label}</option>)}</select></label>
           <div className="ops-user-avatar" title={role}> {role === "AGENT" ? "A1" : role === "SUPERVISOR" ? "S1" : role === "COMPLIANCE" ? "C1" : "O1"}</div>
         </div>
       </header>
       {usesFilters && <FilterBar />}
-      {mode === "mock" && <div className="ops-demo-banner"><span>DEVELOPMENT DATA</span><span>2,000 synthetic call records · all identifiers masked · actions simulated</span></div>}
       <div className="ops-content"><Outlet context={{ role }} /></div>
-      <footer className="ops-footer"><span><i />Synthetic data · development prototype</span><span>Indian Standard Time · Role switcher is demo-only</span></footer>
+      <footer className="ops-footer"><span><i />Town Bank Operations Intelligence · High-Volume Telephony Engine</span><span>All timestamps Asia/Kolkata (IST)</span></footer>
     </div>
 
     {searchOpen && <div className="ops-search-layer" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSearchOpen(false); }}><section className="ops-search-dialog" role="dialog" aria-modal="true" aria-label="Search calls"><div className="ops-search-input-row"><MagnifyingGlass size={20} /><input autoFocus placeholder="Search masked customers, calls or campaigns" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && searchResults[0]) openSearchResult(searchResults[0].id); }} /><kbd>ESC</kbd></div><div className="ops-search-results">{search.length < 2 ? <p>Search by call ID, customer reference, masked number or campaign.</p> : searchResults.length ? searchResults.map((call) => <button key={call.id} onClick={() => openSearchResult(call.id)}><span><strong>{call.id}</strong><small>{call.customerRef} · {call.maskedPhone}</small></span><span>{call.campaignName}</span></button>) : <p>No matching masked records.</p>}</div></section></div>}

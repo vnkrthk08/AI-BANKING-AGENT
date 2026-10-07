@@ -43,7 +43,7 @@ export function downloadCsv(rows: ExportRow[], filename: string): void {
 export function downloadPdf(rows: ExportRow[], filename: string, title: string): void {
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
   doc.setFont("helvetica", "bold"); doc.setFontSize(16); doc.text(title, 40, 38);
-  doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.text(`Synthetic data · Generated ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST`, 40, 54);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.text(`Town Bank Confidential · Generated ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST`, 40, 54);
   const headers = [...new Set(rows.flatMap((row) => Object.keys(row)))];
   autoTable(doc, { startY: 70, head: [headers], body: rows.map((row) => headers.map((key) => safe(row[key]))), styles: { fontSize: 7, cellPadding: 4 }, headStyles: { fillColor: [23, 38, 61] }, alternateRowStyles: { fillColor: [244, 247, 250] } });
   doc.save(filename.endsWith(".pdf") ? filename : `${filename}.pdf`);

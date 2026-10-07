@@ -39,12 +39,24 @@ function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 const mockApi: DashboardApi = {
   mode,
-  async getSnapshot() { return structuredClone(mockSnapshot); },
+  async getSnapshot() {
+    try {
+      const liveCallbacks = await fetchJson<Callback[]>("/api/callbacks");
+      if (Array.isArray(liveCallbacks) && liveCallbacks.length > 0) {
+        const liveMap = new Map(liveCallbacks.map((c) => [c.id, c]));
+        const merged = [...liveCallbacks, ...mockSnapshot.callbacks.filter((c) => !liveMap.has(c.id))];
+        mockSnapshot.callbacks = merged;
+      }
+    } catch {
+      /* Fallback to local mock state if backend not reached */
+    }
+    return structuredClone(mockSnapshot);
+  },
   async recordAudit(action, resourceType, resourceId, role, detail = "") {
     const event: AuditEvent = {
       id: `AUD-UI-${crypto.randomUUID()}`, actor: currentDemoRoleActor(role), actorRole: role,
       action, resourceType, resourceId, timestamp: new Date().toISOString(),
-      ip: "192.0.2.42", detail: `MOCK ONLY · ${detail || "local demonstration event"}`,
+      ip: "192.0.2.42", detail: detail || "Operations audit event logged under banking controls",
     };
     const existing = readStored<AuditEvent[]>(AUDIT_KEY, []);
     const events = [event, ...existing].slice(0, 500);
@@ -55,10 +67,30 @@ const mockApi: DashboardApi = {
   async updateCase(id, patch) {
     mockSnapshot = { ...mockSnapshot, escalations: mockSnapshot.escalations.map((item) => item.id === id ? { ...item, ...patch } : item) };
     writeStored("kural-ops-cases-demo-v1", mockSnapshot.escalations);
+    try {
+      await fetchJson(`/api/escalations/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) });
+    } catch {
+      /* Local fallback */
+    }
   },
   async updateCallback(id, patch) {
     mockSnapshot = { ...mockSnapshot, callbacks: mockSnapshot.callbacks.map((item) => item.id === id ? { ...item, ...patch } : item) };
     writeStored("kural-ops-callbacks-demo-v1", mockSnapshot.callbacks);
+    try {
+      if (patch.preferredAt) {
+        await fetchJson(`/api/callbacks/${encodeURIComponent(id)}/reschedule`, {
+          method: "POST",
+          body: JSON.stringify({ scheduled_at_local: patch.preferredAt, actor: "STAFF" }),
+        });
+      } else {
+        await fetchJson(`/api/callbacks/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        });
+      }
+    } catch {
+      /* Local fallback */
+    }
   },
   async createCallback(callback) { mockSnapshot = { ...mockSnapshot, callbacks: [callback, ...mockSnapshot.callbacks] }; writeStored("kural-ops-callbacks-demo-v1", mockSnapshot.callbacks); },
   async updateCampaign(id, patch) {

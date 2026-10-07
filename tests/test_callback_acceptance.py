@@ -1,6 +1,6 @@
 """Acceptance tests AT-CB-1 through AT-CB-7 per Spec §7.9 and Case tests per Spec §9."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import pytest
 from fastapi.testclient import TestClient
 from zoneinfo import ZoneInfo
@@ -32,9 +32,9 @@ def client(clean_db):
 
 def test_at_cb_1_customer_confirms_callback_appears_in_dashboard(clean_db, client):
     """AT-CB-1: Customer confirms 'tomorrow 5' -> dashboard shows one SCHEDULED callback at Wed 7 Oct 5:00 PM."""
-    # Wed 7 Oct 2026, 17:00 IST = 11:30 UTC
-    scheduled_utc = datetime(2026, 10, 7, 11, 30, tzinfo=timezone.utc)
-    scheduled_local = "Wednesday, 7 October, 5:00 PM IST"
+    # Tomorrow 5:00 PM IST
+    scheduled_utc = datetime.now(timezone.utc) + timedelta(days=1)
+    scheduled_local = "Thursday, 8 October, 5:00 PM IST"
 
     response = client.post(
         "/api/callbacks",
@@ -66,7 +66,7 @@ def test_at_cb_1_customer_confirms_callback_appears_in_dashboard(clean_db, clien
 
 def test_at_cb_2_reschedule_same_call_updates_same_record_and_shows_moved(clean_db, client):
     """AT-CB-2: Customer changes to 6 PM in same call -> SAME callback_id, version 2, shows 'Moved from 5:00 PM'."""
-    dt_5pm = datetime(2026, 10, 7, 11, 30, tzinfo=timezone.utc)
+    dt_5pm = datetime.now(timezone.utc) + timedelta(days=1)
     resp1 = client.post(
         "/api/callbacks",
         json={
@@ -83,7 +83,7 @@ def test_at_cb_2_reschedule_same_call_updates_same_record_and_shows_moved(clean_
     assert first_cb["version"] == 1
 
     # Customer says: "actually make it 6"
-    dt_6pm = datetime(2026, 10, 7, 12, 30, tzinfo=timezone.utc)
+    dt_6pm = dt_5pm + timedelta(hours=1)
     resp2 = client.post(
         "/api/callbacks",
         json={

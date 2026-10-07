@@ -42,6 +42,7 @@ class RealtimeVoiceOrchestrator:
         self._speech_started_at: float | None = None
         self._closed = asyncio.Event()
         self._session_id = ""
+        self._is_opening_greeting = False
 
     async def _send_json(self, payload: dict[str, Any]) -> None:
         async with self._send_lock:
@@ -68,6 +69,11 @@ class RealtimeVoiceOrchestrator:
         if not resume:
             self.engine.begin_live_call(session_id)
         call_started = time.perf_counter()
+
+        prewarm = getattr(self.tts, "prewarm", None)
+        if callable(prewarm):
+            asyncio.create_task(prewarm())
+
         await self._send_json({"type": "connected", "session_id": session_id})
         if not resume:
             opening = KuralEngine.opening_message()
@@ -76,7 +82,7 @@ class RealtimeVoiceOrchestrator:
                 "state": "IDENTITY_CHECK", "intent": None, "policy_decision": "ALLOWED",
                 "ended": False, "opening": True,
             })
-            self._tts_task = asyncio.create_task(self._start_speech(opening, call_started, ended=False))
+            self._tts_task = asyncio.create_task(self._start_speech(opening, call_started, ended=False, is_opening=True))
 
         reader = asyncio.create_task(self._read_microphone(call_started))
         receiver = asyncio.create_task(self._read_sarvam(call_started))
@@ -151,6 +157,9 @@ class RealtimeVoiceOrchestrator:
             event_name = getattr(event, "event", None)
             if event_name == "vad.speech_start":
                 self._speech_started_at = time.perf_counter()
+                if self._is_opening_greeting:
+                    # Acoustic Gating: ignore speaker feedback/echo while opening greeting plays
+                    continue
                 if self._tts_task is not None and not self._tts_task.done():
                     self._tts_task.cancel()
                     await asyncio.gather(self._tts_task, return_exceptions=True)
@@ -166,6 +175,10 @@ class RealtimeVoiceOrchestrator:
             elif event_name == "transcript.final":
                 transcript = getattr(event, "text", "").strip()
                 if not transcript:
+                    continue
+                clean = transcript.strip(" .,!?;:-_")
+                if len(clean) < 2 and clean.lower() not in {"hi", "ok", "no"}:
+                    logger.info("Discarding low-energy/noise STT transcript session=%s: %s", self._session_id, transcript)
                     continue
                 await self._final_transcript(transcript, call_started)
             elif event_name == "error":
@@ -207,6 +220,10 @@ class RealtimeVoiceOrchestrator:
             transcript,
             on_timing=capture_stage,
         )
+        t5_kural_done = time.perf_counter()
+        t3_llm_start = next((t for name, t in provider_stages if name == "llm_request_start"), turn_started)
+        t4_llm_response = next((t for name, t in provider_stages if name == "llm_response_start"), t5_kural_done)
+
         for name, occurred_at in provider_stages:
             await self._send_json({
                 "type": "timing", "name": name,
@@ -217,45 +234,109 @@ class RealtimeVoiceOrchestrator:
             "state": turn_result.state.value, "intent": turn_result.intent.value,
             "policy_decision": turn_result.policy_decision,
             "callback_id": turn_result.callback_id, "case_id": turn_result.case_id,
+            "secondary_question": turn_result.secondary_question,
+            "fallback_used": turn_result.fallback_used,
             "ended": turn_result.ended, "turn": turn_id,
         })
         logger.info(
-            "Voice KURAL turn session=%s state=%s intent=%s processing_ms=%.1f",
+            "Voice KURAL turn session=%s state=%s intent=%s processing_ms=%.1f fallback=%s",
             self._session_id, turn_result.state.value, turn_result.intent.value,
-            (time.perf_counter() - turn_started) * 1000,
+            (time.perf_counter() - turn_started) * 1000, turn_result.fallback_used,
         )
+        turn_telemetry_ctx = {
+            "turn_id": turn_id,
+            "speech_started": speech_started,
+            "stt_final_at": final_at,
+            "t3_llm_start": t3_llm_start,
+            "t4_llm_response": t4_llm_response,
+            "t5_kural_done": t5_kural_done,
+            "turn_result": turn_result,
+        }
         self._tts_task = asyncio.create_task(
-            self._start_speech(turn_result.response, turn_started, ended=turn_result.ended, turn_id=turn_id),
+            self._start_speech(
+                turn_result.response, turn_started, ended=turn_result.ended,
+                turn_id=turn_id, turn_telemetry_ctx=turn_telemetry_ctx,
+            ),
         )
 
     async def _start_speech(self, text: str, call_started: float, *, ended: bool,
-                            turn_id: int | None = None) -> None:
-        await self._send_json({"type": "tts_started", "turn": turn_id})
-        tts_started = time.perf_counter()
-        await self._timing("tts_request_start", call_started, log=True)
-        stream = getattr(self.tts, "stream_realtime", None)
-        if not callable(stream):
-            await self._send_json({"type": "tts_error", "detail": "Realtime speech output is unavailable; the text response is shown."})
-            await self._send_json({"type": "assistant_done", "ended": ended, "turn": turn_id})
-            return
-        first_chunk = True
+                            turn_id: int | None = None, is_opening: bool = False,
+                            turn_telemetry_ctx: dict[str, Any] | None = None) -> None:
+        if is_opening:
+            self._is_opening_greeting = True
         try:
-            async for chunk in stream(text):
+            await self._send_json({"type": "tts_started", "turn": turn_id})
+            tts_started = time.perf_counter()
+            await self._timing("tts_request_start", call_started, log=True)
+            stream = getattr(self.tts, "stream_realtime", None)
+            if not callable(stream):
+                await self._send_json({"type": "tts_error", "detail": "Realtime speech output is unavailable; the text response is shown."})
+                await self._send_json({"type": "assistant_done", "ended": ended, "turn": turn_id})
+                return
+            first_chunk = True
+            try:
+                async for chunk in stream(text):
+                    if first_chunk:
+                        first_chunk = False
+                        t7_first_chunk = time.perf_counter()
+                        await self._timing("first_tts_audio_chunk", tts_started, log=True)
+                        await self._send_json({"type": "audio_format", "encoding": "linear16", "sample_rate": int(getattr(self.tts, "realtime_sample_rate", 24000)), "channels": 1, "turn": turn_id})
+
+                        if turn_telemetry_ctx is not None:
+                            sp_start = turn_telemetry_ctx["speech_started"]
+                            stt_fin = turn_telemetry_ctx["stt_final_at"]
+                            t3 = turn_telemetry_ctx["t3_llm_start"]
+                            t4 = turn_telemetry_ctx["t4_llm_response"]
+                            t5 = turn_telemetry_ctx["t5_kural_done"]
+                            tr = turn_telemetry_ctx["turn_result"]
+                            telemetry = {
+                                "type": "turn_telemetry",
+                                "turn": turn_id,
+                                "provider": self.llm_provider.provider_name,
+                                "model": self.llm_provider.model_name,
+                                "fallback_used": tr.fallback_used,
+                                "secondary_question": tr.secondary_question,
+                                "timings": {
+                                    "t0_customer_speech_end_ms": 0.0,
+                                    "t1_vad_endpoint_ms": round((stt_fin - sp_start) * 1000, 1),
+                                    "t2_stt_final_ms": round((stt_fin - sp_start) * 1000, 1),
+                                    "t3_llm_start_ms": round((t3 - sp_start) * 1000, 1),
+                                    "t4_llm_response_ms": round((t4 - sp_start) * 1000, 1),
+                                    "t5_kural_decision_ms": round((t5 - sp_start) * 1000, 1),
+                                    "t6_tts_start_ms": round((tts_started - sp_start) * 1000, 1),
+                                    "t7_first_audio_ms": round((t7_first_chunk - sp_start) * 1000, 1),
+                                },
+                                "stages": {
+                                    "stt_ms": round((stt_fin - sp_start) * 1000, 1),
+                                    "llm_ms": round(max(0.0, (t4 - t3) * 1000), 1),
+                                    "kural_ms": round(max(0.0, (t5 - t4) * 1000), 1),
+                                    "tts_first_chunk_ms": round(max(0.0, (t7_first_chunk - tts_started) * 1000), 1),
+                                    "total_turn_response_ms": round(max(0.0, (t7_first_chunk - sp_start) * 1000), 1),
+                                },
+                            }
+                            await self._send_json(telemetry)
+                            logger.info(
+                                "Turn telemetry turn=%s provider=%s model=%s fallback=%s total_ms=%.1f llm_ms=%.1f tts_ms=%.1f",
+                                turn_id, self.llm_provider.provider_name, self.llm_provider.model_name,
+                                tr.fallback_used,
+                                telemetry["stages"]["total_turn_response_ms"],
+                                telemetry["stages"]["llm_ms"],
+                                telemetry["stages"]["tts_first_chunk_ms"],
+                            )
+                    await self._send_audio(bytes(chunk))
                 if first_chunk:
-                    first_chunk = False
-                    await self._timing("first_tts_audio_chunk", tts_started, log=True)
-                    await self._send_json({"type": "audio_format", "encoding": "linear16", "sample_rate": int(getattr(self.tts, "realtime_sample_rate", 24000)), "channels": 1, "turn": turn_id})
-                await self._send_audio(bytes(chunk))
-            if first_chunk:
-                raise ValueError("empty TTS stream")
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            logger.warning("Realtime TTS failed session=%s error_type=%s", self._session_id, type(error).__name__)
-            await self._send_json({"type": "tts_error", "detail": "Voice playback is unavailable right now. The text response is still available."})
-        await self._timing("final_audio", tts_started, log=True)
-        await self._send_json({"type": "assistant_done", "ended": ended, "turn": turn_id})
-        if ended:
-            self._closed.set()
-            await self._send_json({"type": "call_ended", "reason": "conversation_completed"})
+                    raise ValueError("empty TTS stream")
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning("Realtime TTS failed session=%s error_type=%s", self._session_id, type(error).__name__)
+                await self._send_json({"type": "tts_error", "detail": "Voice playback is unavailable right now. The text response is still available."})
+            await self._timing("final_audio", tts_started, log=True)
+            await self._send_json({"type": "assistant_done", "ended": ended, "turn": turn_id})
+            if ended:
+                self._closed.set()
+                await self._send_json({"type": "call_ended", "reason": "conversation_completed"})
+        finally:
+            if is_opening:
+                self._is_opening_greeting = False
 

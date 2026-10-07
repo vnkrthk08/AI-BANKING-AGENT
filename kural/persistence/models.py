@@ -44,6 +44,7 @@ class SessionRow(Base):
     session_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     customer_ref: Mapped[str] = mapped_column(String(64), nullable=False)
     current_state: Mapped[str] = mapped_column(String(40), nullable=False)
+    context_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False)
 
