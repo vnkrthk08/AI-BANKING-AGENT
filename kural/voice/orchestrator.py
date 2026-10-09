@@ -1,7 +1,12 @@
 """Transport orchestration for a continuous browser voice call.
 
-This module coordinates provider-neutral STT/TTS interfaces with KURAL. It is
-kept outside the engine so a dedicated media orchestrator can replace it later.
+This module coordinates provider-neutral STT/TTS interfaces with KURAL.
+Equipped with:
+1. Acoustic Echo Cancellation & Self-Speech Filtering
+2. Noise, Filler & Hallucination Suppression
+3. Turn Deduplication and Turn Serialization Locking
+4. Client Playback Gating & Low-Latency User Barge-in
+5. Precision Turn Telemetry (T0 -> T8) & Metrics Registry Integration
 """
 
 from __future__ import annotations
@@ -9,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -20,9 +26,60 @@ from kural.conversation.engine import KuralEngine
 from kural.privacy.transcript import safe_transcript
 from kural.repositories import KuralRepository
 from kural.providers.contracts import LLMProvider, RealtimeSTTSession, TTSProvider
+from kural.telemetry.metrics import metrics_registry
 
 logger = logging.getLogger(__name__)
 MAX_PCM_MESSAGE_BYTES = 16_000  # 500 ms at 16 kHz mono LINEAR16; browser normally sends 20 ms.
+
+DISCARD_NOISE_TOKENS = {
+    "", "huh", "um", "uh", "ah", "mm", "hmm", "mhm", "eh", "oh",
+    ".", "..", "...", "?", "!",
+    "you", "the", "a", "an", "so", "and", "or",
+    "subbu", "town bank",
+}
+
+LEGITIMATE_SHORT_REPLIES = {
+    "yes", "no", "ok", "okay", "yep", "nope", "hi", "hey",
+    "stop", "sure", "fine", "correct", "myself", "speaking",
+}
+
+
+def normalize_text_words(text: str) -> list[str]:
+    """Strip punctuation and lowercase into word tokens."""
+    return re.findall(r"\b[a-zA-Z0-9']+\b", text.lower())
+
+
+def is_acoustic_echo(transcript: str, assistant_utterances: list[str]) -> bool:
+    """Detect if an incoming transcript is self-speech acoustic feedback from device speakers."""
+    t_words = normalize_text_words(transcript)
+    if not t_words:
+        return True
+
+    # If transcript starts with an explicit affirmative or negative token, it's user input
+    if t_words[0] in {"yes", "no", "yep", "nope", "yeah", "sure", "correct", "myself", "stop"}:
+        return False
+    if " ".join(t_words) in LEGITIMATE_SHORT_REPLIES:
+        return False
+
+    t_str = " ".join(t_words)
+
+    for utterance in assistant_utterances:
+        u_words = normalize_text_words(utterance)
+        if not u_words:
+            continue
+        u_str = " ".join(u_words)
+
+        # 1. Exact phrase substring match (e.g. "am i speaking with rahul")
+        if t_str in u_str:
+            return True
+
+        # 2. Token overlap: if >= 50% of transcript words appear in assistant prompt
+        if len(t_words) >= 2:
+            matching_words = sum(1 for w in t_words if w in u_words)
+            if matching_words / len(t_words) >= 0.50:
+                return True
+
+    return False
 
 
 class RealtimeVoiceOrchestrator:
@@ -36,6 +93,7 @@ class RealtimeVoiceOrchestrator:
         self.llm_provider = llm_provider
         self.engine = KuralEngine(repository, llm_provider=llm_provider)
         self._send_lock = asyncio.Lock()
+        self._turn_lock = asyncio.Lock()
         self._tts_task: asyncio.Task[None] | None = None
         self._turn_sequence = 0
         self._first_pcm_at: float | None = None
@@ -43,6 +101,12 @@ class RealtimeVoiceOrchestrator:
         self._closed = asyncio.Event()
         self._session_id = ""
         self._is_opening_greeting = False
+        self._is_assistant_speaking = False
+        self._is_client_playing = False
+        self._last_assistant_speech_ended_at = 0.0
+        self._recent_assistant_utterances: list[str] = []
+        self._last_processed_transcript = ""
+        self._last_processed_at = 0.0
         self._pcm_buffer: bytearray = bytearray()
 
     async def _send_json(self, payload: dict[str, Any]) -> None:
@@ -67,64 +131,63 @@ class RealtimeVoiceOrchestrator:
             await self._send_json({"type": "voice_error", "detail": "This call session is no longer available."})
             return
         self._session_id = session_id
-        if not resume:
-            self.engine.begin_live_call(session_id)
-        call_started = time.perf_counter()
-
-        prewarm = getattr(self.tts, "prewarm", None)
-        if callable(prewarm):
-            asyncio.create_task(prewarm())
-
-        await self._send_json({"type": "connected", "session_id": session_id})
-        if not resume:
-            opening = KuralEngine.opening_message()
-            await self._send_json({
-                "type": "assistant_message", "text": opening,
-                "state": "IDENTITY_CHECK", "intent": None, "policy_decision": "ALLOWED",
-                "ended": False, "opening": True,
-            })
-            self._tts_task = asyncio.create_task(self._start_speech(opening, call_started, ended=False, is_opening=True))
-
-        reader = asyncio.create_task(self._read_microphone(call_started))
-        receiver = asyncio.create_task(self._read_sarvam(call_started))
-        closed_waiter = asyncio.create_task(self._closed.wait())
+        metrics_registry.active_voice_sessions.inc(1.0)
         try:
-            done, pending = await asyncio.wait(
-                {reader, receiver, closed_waiter}, return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in done:
-                error = task.exception() if not task.cancelled() else None
-                if error and not isinstance(error, WebSocketDisconnect):
-                    raise error
-        finally:
-            self._closed.set()
-            for task in (reader, receiver, closed_waiter, self._tts_task):
-                if task is not None and not task.done():
-                    task.cancel()
-            await asyncio.gather(
-                *(task for task in (reader, receiver, closed_waiter, self._tts_task) if task is not None),
-                return_exceptions=True,
-            )
-            if self._pcm_buffer:
-                try:
-                    from kural.services.recording_service import save_pcm_to_wav
-                    save_pcm_to_wav(self._session_id, bytes(self._pcm_buffer))
-                except Exception as exc:
-                    logger.debug("Failed to persist call WAV recording for session %s: %s", self._session_id, exc)
+            if not resume:
+                self.engine.begin_live_call(session_id)
+            call_started = time.perf_counter()
+
+            prewarm = getattr(self.tts, "prewarm", None)
+            if callable(prewarm):
+                asyncio.create_task(prewarm())
+
+            await self._send_json({"type": "connected", "session_id": session_id})
+            if not resume:
+                opening = KuralEngine.opening_message()
+                self._recent_assistant_utterances.append(opening)
+                self._is_assistant_speaking = True
+                await self._send_json({
+                    "type": "assistant_message", "text": opening,
+                    "state": "IDENTITY_CHECK", "intent": None, "policy_decision": "ALLOWED",
+                    "ended": False, "opening": True,
+                })
+                self._tts_task = asyncio.create_task(self._start_speech(opening, call_started, ended=False, is_opening=True))
+
+            reader = asyncio.create_task(self._read_microphone(call_started))
+            receiver = asyncio.create_task(self._read_sarvam(call_started))
+            closed_waiter = asyncio.create_task(self._closed.wait())
             try:
-                db = getattr(self.repository, "database", None)
-                if db is not None:
-                    from sqlalchemy import select
-                    from kural.persistence.models import CallRecordRow
-                    with db.session() as s:
-                        cr = s.scalar(select(CallRecordRow).where(CallRecordRow.session_id == self._session_id))
-                        if cr:
-                            cr.duration_sec = int(time.perf_counter() - call_started)
-                            cr.recording_available = True
-                            cr.status = "COMPLETED"
-                            s.commit()
-            except Exception as exc:
-                logger.warning("Failed to finalize call record duration for session %s: %s", self._session_id, exc)
+                done, pending = await asyncio.wait(
+                    {reader, receiver, closed_waiter}, return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in done:
+                    error = task.exception() if not task.cancelled() else None
+                    if error and not isinstance(error, WebSocketDisconnect):
+                        raise error
+            finally:
+                self._closed.set()
+                if self._pcm_buffer:
+                    try:
+                        from kural.services.recording_service import save_pcm_to_wav
+                        save_pcm_to_wav(self._session_id, bytes(self._pcm_buffer))
+                    except Exception as exc:
+                        logger.debug("Failed to persist call WAV recording for session %s: %s", self._session_id, exc)
+                try:
+                    db = getattr(self.repository, "database", None)
+                    if db is not None:
+                        from sqlalchemy import select
+                        from kural.persistence.models import CallRecordRow
+                        with db.session() as s:
+                            cr = s.scalar(select(CallRecordRow).where(CallRecordRow.session_id == self._session_id))
+                            if cr:
+                                cr.duration_sec = int(time.perf_counter() - call_started)
+                                cr.recording_available = True
+                                cr.status = "COMPLETED"
+                                s.commit()
+                except Exception as exc:
+                    logger.warning("Failed to finalize call record duration for session %s: %s", self._session_id, exc)
+        finally:
+            metrics_registry.active_voice_sessions.dec(1.0)
 
     async def _read_microphone(self, call_started: float) -> None:
         while not self._closed.is_set():
@@ -155,6 +218,14 @@ class RealtimeVoiceOrchestrator:
                     if callable(end):
                         await end()
                     return
+                if kind == "playback_status":
+                    status = control.get("status")
+                    if status == "playing":
+                        self._is_client_playing = True
+                    elif status == "idle":
+                        self._is_client_playing = False
+                        self._last_assistant_speech_ended_at = time.perf_counter()
+                    continue
                 if kind == "user_text":
                     user_utterance = str(control.get("text", "")).strip()
                     if user_utterance:
@@ -163,6 +234,8 @@ class RealtimeVoiceOrchestrator:
                             await asyncio.gather(self._tts_task, return_exceptions=True)
                             self._tts_task = None
                             await self._send_json({"type": "barge_in"})
+                        self._is_assistant_speaking = False
+                        self._is_client_playing = False
                         await self._final_transcript(user_utterance, call_started)
                     continue
                 if kind == "client_timing" and control.get("name") in {
@@ -179,30 +252,63 @@ class RealtimeVoiceOrchestrator:
             event_name = getattr(event, "event", None)
             if event_name == "vad.speech_start":
                 self._speech_started_at = time.perf_counter()
-                if self._is_opening_greeting:
-                    # Acoustic Gating: ignore speaker feedback/echo while opening greeting plays
-                    continue
-                if self._tts_task is not None and not self._tts_task.done():
-                    self._tts_task.cancel()
-                    await asyncio.gather(self._tts_task, return_exceptions=True)
-                    self._tts_task = None
-                    await self._send_json({"type": "barge_in"})
-                await self._send_json({"type": "speech_started"})
+                # If assistant is currently speaking, do not cancel speech on VAD start alone;
+                # speaker feedback frequently triggers VAD. Wait for transcript confirmation.
+                if not (self._is_assistant_speaking or self._is_client_playing):
+                    await self._send_json({"type": "speech_started"})
             elif event_name == "transcript.partial":
                 if self._speech_started_at is not None:
                     await self._timing("first_stt_partial", self._speech_started_at, log=True)
-                await self._send_json({
-                    "type": "transcript_partial", "text": safe_transcript(getattr(event, "text", "")),
-                })
+                partial_text = getattr(event, "text", "")
+                if partial_text:
+                    await self._send_json({
+                        "type": "transcript_partial", "text": safe_transcript(partial_text),
+                    })
             elif event_name == "transcript.final":
                 transcript = getattr(event, "text", "").strip()
                 if not transcript:
                     continue
                 clean = transcript.strip(" .,!?;:-_")
-                if len(clean) < 2 and clean.lower() not in {"hi", "ok", "no"}:
+                clean_lower = clean.lower()
+
+                # 1. Reject noise, fillers, single-character hallucinations
+                if clean_lower in DISCARD_NOISE_TOKENS:
+                    logger.info("Discarding noise/filler token session=%s: %s", self._session_id, transcript)
+                    continue
+                if len(clean) < 2 and clean_lower not in LEGITIMATE_SHORT_REPLIES:
                     logger.info("Discarding low-energy/noise STT transcript session=%s: %s", self._session_id, transcript)
                     continue
-                await self._final_transcript(transcript, call_started)
+                if len(clean.split()) == 1 and len(clean) < 3 and clean_lower not in LEGITIMATE_SHORT_REPLIES:
+                    logger.info("Discarding single-char non-reply token session=%s: %s", self._session_id, transcript)
+                    continue
+
+                # 2. Acoustic echo / self-speech suppression
+                is_currently_speaking = (
+                    self._is_assistant_speaking
+                    or self._is_client_playing
+                    or (time.perf_counter() - self._last_assistant_speech_ended_at < 1.2)
+                )
+
+                if is_acoustic_echo(clean, self._recent_assistant_utterances):
+                    logger.info(
+                        "Discarding acoustic echo self-transcription session=%s (is_speaking=%s): %s",
+                        self._session_id, is_currently_speaking, transcript,
+                    )
+                    continue
+
+                # 3. User barge-in during assistant speech
+                if is_currently_speaking:
+                    logger.info("User barge-in detected session=%s: %s", self._session_id, transcript)
+                    if self._tts_task is not None and not self._tts_task.done():
+                        self._tts_task.cancel()
+                        await asyncio.gather(self._tts_task, return_exceptions=True)
+                        self._tts_task = None
+                    await self._send_json({"type": "barge_in"})
+                    self._is_assistant_speaking = False
+                    self._is_client_playing = False
+
+                # 4. Process valid customer turn exactly once
+                await self._final_transcript(clean, call_started)
             elif event_name == "error":
                 logger.warning(
                     "Realtime STT error session=%s code=%s fatal=%s",
@@ -221,69 +327,92 @@ class RealtimeVoiceOrchestrator:
                 logger.info("Realtime STT connected session=%s request_id=%s", self._session_id, request_id)
 
     async def _final_transcript(self, transcript: str, call_started: float) -> None:
-        if self._tts_task is not None and not self._tts_task.done():
-            self._tts_task.cancel()
-            await asyncio.gather(self._tts_task, return_exceptions=True)
-        self._turn_sequence += 1
-        turn_id = self._turn_sequence
-        final_at = time.perf_counter()
-        turn_started = final_at
-        speech_started = self._speech_started_at or final_at
-        await self._timing("final_stt", speech_started, log=True)
-        await self._send_json({"type": "transcript_final", "text": safe_transcript(transcript), "turn": turn_id})
-        provider_stages: list[tuple[str, float]] = []
+        async with self._turn_lock:
+            clean = transcript.strip(" .,!?;:-_")
+            if not clean:
+                return
 
-        def capture_stage(name: str) -> None:
-            provider_stages.append((name, time.perf_counter()))
+            now = time.perf_counter()
+            # Deduplication: suppress identical transcript arriving within 2.5 seconds
+            if clean.lower() == self._last_processed_transcript.lower() and (now - self._last_processed_at) < 2.5:
+                logger.info("Discarding duplicate final transcript session=%s: %s", self._session_id, transcript)
+                return
 
-        turn_result = await run_in_threadpool(
-            self.engine.turn,
-            self._session_id,
-            transcript,
-            on_timing=capture_stage,
-        )
-        t5_kural_done = time.perf_counter()
-        t3_llm_start = next((t for name, t in provider_stages if name == "llm_request_start"), turn_started)
-        t4_llm_response = next((t for name, t in provider_stages if name == "llm_response_start"), t5_kural_done)
+            self._last_processed_transcript = clean
+            self._last_processed_at = now
 
-        for name, occurred_at in provider_stages:
+            if self._tts_task is not None and not self._tts_task.done():
+                self._tts_task.cancel()
+                await asyncio.gather(self._tts_task, return_exceptions=True)
+                self._tts_task = None
+
+            self._turn_sequence += 1
+            turn_id = self._turn_sequence
+            final_at = time.perf_counter()
+            turn_started = final_at
+            speech_started = self._speech_started_at or final_at
+            await self._timing("final_stt", speech_started, log=True)
+            await self._send_json({"type": "transcript_final", "text": safe_transcript(clean), "turn": turn_id})
+            provider_stages: list[tuple[str, float]] = []
+
+            def capture_stage(name: str) -> None:
+                provider_stages.append((name, time.perf_counter()))
+
+            turn_result = await run_in_threadpool(
+                self.engine.turn,
+                self._session_id,
+                clean,
+                on_timing=capture_stage,
+            )
+            t5_kural_done = time.perf_counter()
+            t3_llm_start = next((t for name, t in provider_stages if name == "llm_request_start"), turn_started)
+            t4_llm_response = next((t for name, t in provider_stages if name == "llm_response_start"), t5_kural_done)
+
+            for name, occurred_at in provider_stages:
+                await self._send_json({
+                    "type": "timing", "name": name,
+                    "elapsed_ms": round((occurred_at - turn_started) * 1000, 1),
+                })
             await self._send_json({
-                "type": "timing", "name": name,
-                "elapsed_ms": round((occurred_at - turn_started) * 1000, 1),
+                "type": "assistant_message", "text": turn_result.response,
+                "state": turn_result.state.value, "intent": turn_result.intent.value,
+                "policy_decision": turn_result.policy_decision,
+                "callback_id": turn_result.callback_id, "case_id": turn_result.case_id,
+                "secondary_question": turn_result.secondary_question,
+                "fallback_used": turn_result.fallback_used,
+                "ended": turn_result.ended, "turn": turn_id,
             })
-        await self._send_json({
-            "type": "assistant_message", "text": turn_result.response,
-            "state": turn_result.state.value, "intent": turn_result.intent.value,
-            "policy_decision": turn_result.policy_decision,
-            "callback_id": turn_result.callback_id, "case_id": turn_result.case_id,
-            "secondary_question": turn_result.secondary_question,
-            "fallback_used": turn_result.fallback_used,
-            "ended": turn_result.ended, "turn": turn_id,
-        })
-        logger.info(
-            "Voice KURAL turn session=%s state=%s intent=%s processing_ms=%.1f fallback=%s",
-            self._session_id, turn_result.state.value, turn_result.intent.value,
-            (time.perf_counter() - turn_started) * 1000, turn_result.fallback_used,
-        )
-        turn_telemetry_ctx = {
-            "turn_id": turn_id,
-            "speech_started": speech_started,
-            "stt_final_at": final_at,
-            "t3_llm_start": t3_llm_start,
-            "t4_llm_response": t4_llm_response,
-            "t5_kural_done": t5_kural_done,
-            "turn_result": turn_result,
-        }
-        self._tts_task = asyncio.create_task(
-            self._start_speech(
-                turn_result.response, turn_started, ended=turn_result.ended,
-                turn_id=turn_id, turn_telemetry_ctx=turn_telemetry_ctx,
-            ),
-        )
+            logger.info(
+                "Voice KURAL turn session=%s state=%s intent=%s processing_ms=%.1f fallback=%s",
+                self._session_id, turn_result.state.value, turn_result.intent.value,
+                (time.perf_counter() - turn_started) * 1000, turn_result.fallback_used,
+            )
+
+            # Record assistant response in recent utterances for echo filtering
+            self._recent_assistant_utterances.append(turn_result.response)
+            if len(self._recent_assistant_utterances) > 6:
+                self._recent_assistant_utterances.pop(0)
+
+            turn_telemetry_ctx = {
+                "turn_id": turn_id,
+                "speech_started": speech_started,
+                "stt_final_at": final_at,
+                "t3_llm_start": t3_llm_start,
+                "t4_llm_response": t4_llm_response,
+                "t5_kural_done": t5_kural_done,
+                "turn_result": turn_result,
+            }
+            self._tts_task = asyncio.create_task(
+                self._start_speech(
+                    turn_result.response, turn_started, ended=turn_result.ended,
+                    turn_id=turn_id, turn_telemetry_ctx=turn_telemetry_ctx,
+                ),
+            )
 
     async def _start_speech(self, text: str, call_started: float, *, ended: bool,
                             turn_id: int | None = None, is_opening: bool = False,
                             turn_telemetry_ctx: dict[str, Any] | None = None) -> None:
+        self._is_assistant_speaking = True
         if is_opening:
             self._is_opening_greeting = True
         try:
@@ -301,6 +430,8 @@ class RealtimeVoiceOrchestrator:
                     if first_chunk:
                         first_chunk = False
                         t7_first_chunk = time.perf_counter()
+                        elapsed_first_audio_ms = (t7_first_chunk - call_started) * 1000.0
+                        metrics_registry.turn_latency_first_audio_ms.observe(elapsed_first_audio_ms)
                         await self._timing("first_tts_audio_chunk", tts_started, log=True)
                         await self._send_json({"type": "audio_format", "encoding": "linear16", "sample_rate": int(getattr(self.tts, "realtime_sample_rate", 24000)), "channels": 1, "turn": turn_id})
 
@@ -354,11 +485,14 @@ class RealtimeVoiceOrchestrator:
                 logger.warning("Realtime TTS failed session=%s error_type=%s", self._session_id, type(error).__name__)
                 await self._send_json({"type": "tts_error", "detail": "Voice playback is unavailable right now. The text response is still available."})
             await self._timing("final_audio", tts_started, log=True)
+            elapsed_full_turn_ms = (time.perf_counter() - call_started) * 1000.0
+            metrics_registry.turn_latency_full_ms.observe(elapsed_full_turn_ms)
             await self._send_json({"type": "assistant_done", "ended": ended, "turn": turn_id})
             if ended:
                 self._closed.set()
                 await self._send_json({"type": "call_ended", "reason": "conversation_completed"})
         finally:
+            self._is_assistant_speaking = False
+            self._last_assistant_speech_ended_at = time.perf_counter()
             if is_opening:
                 self._is_opening_greeting = False
-

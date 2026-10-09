@@ -209,6 +209,8 @@ export function TestConsolePage() {
       source.disconnect();
     }
     playingSourcesRef.current.clear();
+    captureNodeRef.current?.port.postMessage({ isSpeaking: false });
+    voiceConnectionRef.current?.sendPlaybackStatus("idle");
     nextAudioTimeRef.current = audioContextRef.current?.currentTime ?? 0;
   }
 
@@ -311,12 +313,18 @@ export function TestConsolePage() {
     const playAt = Math.max(context.currentTime + 0.015, nextAudioTimeRef.current);
     source.start(playAt);
     nextAudioTimeRef.current = playAt + buffer.duration;
+    if (playingSourcesRef.current.size === 0) {
+      captureNodeRef.current?.port.postMessage({ isSpeaking: true });
+      voiceConnectionRef.current?.sendPlaybackStatus("playing");
+    }
     playingSourcesRef.current.add(source);
 
     source.onended = () => {
       source.disconnect();
       playingSourcesRef.current.delete(source);
       if (!playingSourcesRef.current.size) {
+        captureNodeRef.current?.port.postMessage({ isSpeaking: false });
+        voiceConnectionRef.current?.sendPlaybackStatus("idle");
         if (callEndingPendingRef.current && allTtsChunksReceivedRef.current) {
           if (endingFinalizeTimerRef.current) {
             window.clearTimeout(endingFinalizeTimerRef.current);

@@ -33,6 +33,7 @@ export interface RealtimeVoiceConnection {
   sendAudio: (pcm16: ArrayBuffer) => void;
   sendTiming: (name: string, elapsedMs: number) => void;
   sendText: (text: string) => void;
+  sendPlaybackStatus: (status: "playing" | "idle") => void;
   end: () => void;
   close: () => void;
 }
@@ -157,6 +158,9 @@ export const kuralApi = {
           },
           sendText: (text) => {
             if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "user_text", text }));
+          },
+          sendPlaybackStatus: (status) => {
+            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "playback_status", status }));
           },
           end: () => {
             if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "end" }));
