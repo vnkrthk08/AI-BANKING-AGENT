@@ -107,5 +107,6 @@ def derive_key(master_key: bytes, context: bytes, length: int = 32) -> bytes:
 
 def compute_blind_index(plaintext: str, key: bytes) -> str:
     """Compute a deterministic HMAC-SHA256 blind index for exact search."""
+    import hashlib
     normalized = plaintext.strip().lower().encode("utf-8")
-    return hmac.new(key, normalized, hashes.SHA256()).hexdigest()
+    return hmac.new(key, normalized, hashlib.sha256).hexdigest()
