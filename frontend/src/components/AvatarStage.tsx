@@ -10,7 +10,9 @@ interface AvatarStageProps {
 
 const labels: Record<VoiceState, string> = {
   READY: "Ready when you are", LISTENING: "Listening to you", PROCESSING: "KURAL is thinking",
-  SPEAKING: "AVA is speaking", INTERRUPTED: "Listening to you", ENDED: "Conversation ended",
+  SPEAKING: "AVA is speaking", INTERRUPTED: "Listening to you",
+  SILENCE_REMINDER: "Reminding customer...", TERMINATING: "Ending call (no response)...",
+  ENDED: "Conversation ended",
 };
 
 export function AvatarStage({ state, sttAvailable, onTalk, onStop }: AvatarStageProps) {

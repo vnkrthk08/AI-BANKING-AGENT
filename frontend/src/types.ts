@@ -1,4 +1,4 @@
-export type VoiceState = "READY" | "LISTENING" | "PROCESSING" | "SPEAKING" | "INTERRUPTED" | "ENDED";
+export type VoiceState = "READY" | "LISTENING" | "PROCESSING" | "SPEAKING" | "INTERRUPTED" | "SILENCE_REMINDER" | "TERMINATING" | "ENDED";
 export type PolicyDecision = "ALLOWED" | "BLOCKED";
 export type Role = "OPS_MANAGER" | "SUPERVISOR" | "AGENT" | "COMPLIANCE";
 export type Disposition = "CLOSED" | "CALLBACK_SCHEDULED" | "ESCALATED" | "NOT_INTERESTED" | "BUSY" | "NO_ANSWER" | "DND" | "FAILED";

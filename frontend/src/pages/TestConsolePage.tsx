@@ -532,7 +532,23 @@ export function TestConsolePage() {
         }
         break;
 
-      case "call_ended":
+      case "silence_state": {
+        const stateStr = String(message.state ?? "");
+        if (stateStr === "REMINDER") {
+          setVoiceState("SILENCE_REMINDER");
+        } else if (stateStr === "TERMINATING") {
+          setVoiceState("TERMINATING");
+        } else if (stateStr === "WAITING" && !callEndingPendingRef.current) {
+          setVoiceState("LISTENING");
+        }
+        break;
+      }
+
+      case "call_ended": {
+        const reason = String(message.reason ?? "");
+        if (reason === "no_response") {
+          setIntent("NO_RESPONSE");
+        }
         callEndingPendingRef.current = true;
         allTtsChunksReceivedRef.current = true;
         stopMicrophone();
@@ -545,6 +561,7 @@ export function TestConsolePage() {
           }, 600);
         }
         break;
+      }
 
       default:
         break;
@@ -804,6 +821,10 @@ export function TestConsolePage() {
   const statusLabel = connected
     ? voiceState === "SPEAKING"
       ? "SUBBU SPEAKING"
+      : voiceState === "SILENCE_REMINDER"
+      ? "SILENCE REMINDER"
+      : voiceState === "TERMINATING"
+      ? "ENDING (NO RESPONSE)"
       : voiceState === "LISTENING"
       ? "LISTENING TO YOU"
       : voiceState === "PROCESSING"
@@ -812,7 +833,7 @@ export function TestConsolePage() {
       ? "INTERRUPTED"
       : "CONNECTED"
     : callEnded
-    ? "CALL ENDED"
+    ? intent === "NO_RESPONSE" ? "ENDED (NO RESPONSE)" : "CALL ENDED"
     : "READY";
 
   return (
@@ -1035,21 +1056,34 @@ export function TestConsolePage() {
             }}
           >
             {/* Visual presence orb */}
-            <div className={`active-orb-box ${connected ? (voiceState === "SPEAKING" ? "speaking" : "listening") : ""}`}>
+            <div className={`active-orb-box ${connected ? (voiceState === "SPEAKING" ? "speaking" : voiceState === "SILENCE_REMINDER" ? "speaking" : "listening") : ""}`}>
               <div className="active-orb-halo" />
               <div className="active-orb">S</div>
             </div>
 
             {/* Dynamic state caption */}
             <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: "14px", fontWeight: 700, letterSpacing: "0.04em", color: connected ? (voiceState === "SPEAKING" ? "#38bdf8" : voiceState === "LISTENING" ? "#34d399" : "#a78bfa") : "#94a3b8" }}>
+              <div style={{
+                fontSize: "14px",
+                fontWeight: 700,
+                letterSpacing: "0.04em",
+                color: connected
+                  ? (voiceState === "SPEAKING" ? "#38bdf8"
+                    : voiceState === "SILENCE_REMINDER" ? "#fbbf24"
+                    : voiceState === "TERMINATING" ? "#f87171"
+                    : voiceState === "LISTENING" ? "#34d399"
+                    : "#a78bfa")
+                  : "#94a3b8"
+              }}>
                 {connected ? (
                   voiceState === "SPEAKING" ? "SUBBU IS SPEAKING" :
+                  voiceState === "SILENCE_REMINDER" ? "REMINDING CUSTOMER (NO RESPONSE)" :
+                  voiceState === "TERMINATING" ? "ENDING CALL (NO RESPONSE)" :
                   voiceState === "LISTENING" ? "LISTENING TO YOU" :
                   voiceState === "PROCESSING" ? "THINKING & EVALUATING" :
                   voiceState === "INTERRUPTED" ? "INTERRUPTED" : "CONNECTED"
                 ) : callEnded ? (
-                  "INTERACTION CONCLUDED"
+                  intent === "NO_RESPONSE" ? "CALL CONCLUDED · NO RESPONSE" : "INTERACTION CONCLUDED"
                 ) : (
                   "SUBBU READY TO CALL"
                 )}
@@ -1190,7 +1224,7 @@ export function TestConsolePage() {
                     Call Completed · Duration: {formatDuration(finalDuration || callDuration)}
                   </strong>
                   <span style={{ fontSize: "12px", color: "#94a3b8" }}>
-                    Outcome: {callbackRequested ? "Callback Scheduled" : caseId ? `Support Case Created (#${caseId})` : policy === "BLOCKED" ? "Blocked by Security Guard" : "Concluded Successfully"}
+                    Outcome: {intent === "NO_RESPONSE" ? "Terminated (No Customer Response)" : callbackRequested ? "Callback Scheduled" : caseId ? `Support Case Created (#${caseId})` : policy === "BLOCKED" ? "Blocked by Security Guard" : "Concluded Successfully"}
                   </span>
                 </div>
               </div>

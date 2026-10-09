@@ -78,6 +78,15 @@ class SarvamRealtimeSTTSession:
 
         await self._websocket.send_realtime_end(RealtimeEnd())
 
+    async def flush(self) -> None:
+        flush_fn = getattr(self._websocket, "send_realtime_flush", None)
+        if callable(flush_fn):
+            try:
+                from sarvamai import RealtimeFlush
+                await flush_fn(RealtimeFlush())
+            except Exception:
+                pass
+
 
 class SarvamRealtimeSTTAdapter:
     """Realtime Saaras adapter; credentials and SDK types stay server-side."""

@@ -11,6 +11,7 @@ Equipped with:
 
 from __future__ import annotations
 
+import os
 import asyncio
 import json
 import logging
@@ -23,6 +24,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
 from kural.conversation.engine import KuralEngine
+from kural.models import Intent
 from kural.privacy.transcript import safe_transcript
 from kural.repositories import KuralRepository
 from kural.providers.contracts import LLMProvider, RealtimeSTTSession, TTSProvider
@@ -41,6 +43,13 @@ DISCARD_NOISE_TOKENS = {
 LEGITIMATE_SHORT_REPLIES = {
     "yes", "no", "ok", "okay", "yep", "nope", "hi", "hey",
     "stop", "sure", "fine", "correct", "myself", "speaking",
+    "wait", "problem", "issue", "not", "updated", "installed",
+}
+
+COMMON_STOP_WORDS = {
+    "a", "an", "the", "in", "on", "at", "to", "for", "of", "with", "is", "was", "are", "were",
+    "or", "if", "you", "i", "have", "had", "has", "me", "my", "your", "we", "our", "it", "its",
+    "do", "did", "does", "so", "and", "but", "by", "from", "this", "that", "be", "been",
 }
 
 
@@ -49,34 +58,46 @@ def normalize_text_words(text: str) -> list[str]:
     return re.findall(r"\b[a-zA-Z0-9']+\b", text.lower())
 
 
-def is_acoustic_echo(transcript: str, assistant_utterances: list[str]) -> bool:
+def is_acoustic_echo(
+    transcript: str, assistant_utterances: list[str], is_currently_speaking: bool = True,
+) -> bool:
     """Detect if an incoming transcript is self-speech acoustic feedback from device speakers."""
+    if not is_currently_speaking:
+        return False
+
     t_words = normalize_text_words(transcript)
     if not t_words:
         return True
 
-    # If transcript starts with an explicit affirmative or negative token, it's user input
-    if t_words[0] in {"yes", "no", "yep", "nope", "yeah", "sure", "correct", "myself", "stop"}:
+    t_str = " ".join(t_words)
+
+    # 1. Exact phrase substring match: require at least 3 words matching an assistant utterance
+    if len(t_words) >= 3:
+        for utterance in assistant_utterances:
+            u_words = normalize_text_words(utterance)
+            if t_str in " ".join(u_words):
+                return True
+
+    # User conversational intent tokens
+    if t_words[0] in {
+        "yes", "no", "yep", "nope", "yeah", "sure", "correct", "myself", "stop", "wait", "call", "who", "i",
+    }:
         return False
     if " ".join(t_words) in LEGITIMATE_SHORT_REPLIES:
         return False
-
-    t_str = " ".join(t_words)
 
     for utterance in assistant_utterances:
         u_words = normalize_text_words(utterance)
         if not u_words:
             continue
-        u_str = " ".join(u_words)
 
-        # 1. Exact phrase substring match (e.g. "am i speaking with rahul")
-        if t_str in u_str:
-            return True
+        # 2. Content word overlap: ignore common stop words
+        content_t_words = [w for w in t_words if w not in COMMON_STOP_WORDS]
+        content_u_words = set(w for w in u_words if w not in COMMON_STOP_WORDS)
 
-        # 2. Token overlap: if >= 50% of transcript words appear in assistant prompt
-        if len(t_words) >= 2:
-            matching_words = sum(1 for w in t_words if w in u_words)
-            if matching_words / len(t_words) >= 0.50:
+        if len(content_t_words) >= 2:
+            matching_content = sum(1 for w in content_t_words if w in content_u_words)
+            if matching_content / len(content_t_words) >= 0.75:
                 return True
 
     return False
@@ -95,6 +116,15 @@ class RealtimeVoiceOrchestrator:
         self._send_lock = asyncio.Lock()
         self._turn_lock = asyncio.Lock()
         self._tts_task: asyncio.Task[None] | None = None
+        self._silence_timer_task: asyncio.Task[None] | None = None
+        self._turn_finalizer_task: asyncio.Task[None] | None = None
+        self.silence_timeout_sec = float(os.getenv("KURAL_SILENCE_TIMEOUT_SEC", "7.0"))
+        self.turn_silence_window_sec = float(os.getenv("KURAL_TURN_SILENCE_WINDOW_SEC", "0.8"))
+        self._silence_state = "IDLE"  # IDLE, WAITING_INITIAL, REMINDER_ACTIVE, WAITING_POST_REMINDER, CLOSING
+        self._reminder_count = 0
+        self._speech_active = False
+        self._latest_partial_transcript = ""
+        self._last_speech_activity_at = 0.0
         self._turn_sequence = 0
         self._first_pcm_at: float | None = None
         self._speech_started_at: float | None = None
@@ -127,6 +157,196 @@ class RealtimeVoiceOrchestrator:
                 self._session_id, name, elapsed_ms,
             )
 
+    def _get_customer_language(self) -> str:
+        try:
+            sess = self.repository.get_session(self._session_id)
+            if sess and sess.customer_ref:
+                cust = self.repository.get_customer(sess.customer_ref)
+                if cust and cust.preferred_language:
+                    return cust.preferred_language
+        except Exception:
+            pass
+        return "English"
+
+    def _get_silence_reminder_text(self) -> str:
+        env_override = os.getenv("KURAL_SILENCE_REMINDER_TEXT")
+        if env_override:
+            return env_override
+        pref_lang = self._get_customer_language()
+        if pref_lang.lower().startswith("hi"):
+            return "Namaste, kya aap sun rahe hain? Mujhe aapki aawaaz nahi aayi."
+        if pref_lang.lower().startswith("ta"):
+            return "Vanakkam, ungalukku ketkiradha? Ungal pathil ketkavillai."
+        return "Hello, are you still there? I couldn't hear a response."
+
+    def _get_silence_closing_text(self) -> str:
+        env_override = os.getenv("KURAL_SILENCE_CLOSING_TEXT")
+        if env_override:
+            return env_override
+        pref_lang = self._get_customer_language()
+        if pref_lang.lower().startswith("hi"):
+            return "Aapka koi jawaab nahi milne ke karan main call samapt kar raha hoon. KURAL Bank mein call karne ke liye dhanyavad. Namaste."
+        if pref_lang.lower().startswith("ta"):
+            return "Ungalidamirundhu pathil illathathaal intha azhaippai mudikkiren. KURAL Bank-il azhaithatharku nandri. Vanakkam."
+        return "I haven't heard a response, so I'll end the call now. Thank you for your time. Goodbye."
+
+    def _cancel_silence_timer(self) -> None:
+        if self._silence_timer_task is not None and not self._silence_timer_task.done():
+            self._silence_timer_task.cancel()
+            self._silence_timer_task = None
+        if self._silence_state not in ("CLOSING", "TERMINATING"):
+            self._silence_state = "IDLE"
+
+    def _arm_silence_timer(self, call_started: float) -> None:
+        if self._closed.is_set() or self._is_assistant_speaking or self._is_client_playing or self._speech_active:
+            return
+        if self._silence_timer_task is not None and not self._silence_timer_task.done():
+            self._silence_timer_task.cancel()
+        if self._reminder_count == 0:
+            self._silence_state = "WAITING_INITIAL"
+        else:
+            self._silence_state = "WAITING_POST_REMINDER"
+        asyncio.create_task(self._send_json({
+            "type": "silence_state",
+            "state": "WAITING",
+            "timeout_sec": self.silence_timeout_sec,
+            "reminder_count": self._reminder_count,
+        }))
+        self._silence_timer_task = asyncio.create_task(self._silence_timeout_worker(call_started))
+
+    async def _fallback_arm_silence_timer(self, call_started: float) -> None:
+        await asyncio.sleep(0.5)
+        if (
+            not self._closed.is_set()
+            and not self._is_assistant_speaking
+            and not self._is_client_playing
+            and not self._speech_active
+            and self._silence_state in ("IDLE", "REMINDER_ACTIVE")
+        ):
+            self._arm_silence_timer(call_started)
+
+    async def _silence_timeout_worker(self, call_started: float) -> None:
+        try:
+            await asyncio.sleep(self.silence_timeout_sec)
+            if self._closed.is_set():
+                return
+            if self._speech_active or bool(self._latest_partial_transcript.strip()):
+                logger.info("Customer speech active session=%s; deferring silence timeout", self._session_id)
+                return
+            if self._is_assistant_speaking or self._is_client_playing:
+                return
+
+            if self._reminder_count == 0:
+                self._reminder_count = 1
+                self._silence_state = "REMINDER_ACTIVE"
+                reminder_text = self._get_silence_reminder_text()
+                logger.info("Customer silence timeout 1 (%.1fs) triggered reminder session=%s: %s", self.silence_timeout_sec, self._session_id, reminder_text)
+                await self._send_json({
+                    "type": "silence_state", "state": "REMINDER", "text": reminder_text,
+                })
+                current_state_val = "IDENTITY_CHECK"
+                try:
+                    s_row = self.repository.get_session(self._session_id)
+                    if s_row:
+                        current_state_val = s_row.state.value if hasattr(s_row.state, "value") else str(s_row.state)
+                except Exception:
+                    pass
+                await self._send_json({
+                    "type": "assistant_message",
+                    "text": reminder_text,
+                    "state": current_state_val,
+                    "intent": Intent.SILENCE.value,
+                    "policy_decision": "ALLOWED",
+                    "ended": False,
+                    "silence_reminder": True,
+                    "turn": self._turn_sequence,
+                })
+                self._recent_assistant_utterances.append(reminder_text)
+                self._tts_task = asyncio.create_task(
+                    self._start_speech(reminder_text, call_started, ended=False, is_silence_prompt=True)
+                )
+            else:
+                self._silence_state = "CLOSING"
+                closing_text = self._get_silence_closing_text()
+                logger.info("Customer silence timeout 2 (%.1fs) triggered termination session=%s: %s", self.silence_timeout_sec, self._session_id, closing_text)
+                await self._send_json({
+                    "type": "silence_state", "state": "TERMINATING", "text": closing_text,
+                })
+                await self._send_json({
+                    "type": "assistant_message",
+                    "text": closing_text,
+                    "state": "ENDED",
+                    "intent": Intent.SILENCE.value,
+                    "policy_decision": "ALLOWED",
+                    "ended": True,
+                    "silence_closing": True,
+                    "turn": self._turn_sequence,
+                })
+                self._recent_assistant_utterances.append(closing_text)
+                self._tts_task = asyncio.create_task(
+                    self._start_speech(closing_text, call_started, ended=True, is_silence_closing=True)
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("Silence timeout worker error session=%s: %s", self._session_id, exc)
+
+    def _cancel_turn_finalizer(self) -> None:
+        if self._turn_finalizer_task is not None and not self._turn_finalizer_task.done():
+            self._turn_finalizer_task.cancel()
+            self._turn_finalizer_task = None
+
+    def _schedule_turn_finalizer(self, call_started: float, debounce_sec: float | None = None) -> None:
+        self._cancel_turn_finalizer()
+        delay = debounce_sec if debounce_sec is not None else self.turn_silence_window_sec
+        self._turn_finalizer_task = asyncio.create_task(self._turn_finalizer_worker(call_started, delay))
+
+    async def _turn_finalizer_worker(self, call_started: float, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            if self._closed.is_set():
+                return
+            partial = self._latest_partial_transcript.strip()
+            if not partial:
+                return
+
+            clean = partial.strip(" .,!?;:-_")
+            clean_lower = clean.lower()
+
+            if clean_lower in DISCARD_NOISE_TOKENS:
+                self._latest_partial_transcript = ""
+                return
+            if len(clean) < 2 and clean_lower not in LEGITIMATE_SHORT_REPLIES:
+                self._latest_partial_transcript = ""
+                return
+
+            is_speaking = (
+                self._is_assistant_speaking
+                or self._is_client_playing
+                or (time.perf_counter() - self._last_assistant_speech_ended_at < 0.4)
+            )
+            if is_speaking and is_acoustic_echo(clean, self._recent_assistant_utterances, is_currently_speaking=True):
+                self._latest_partial_transcript = ""
+                return
+
+            logger.info("Turn finalization watchdog triggered (silence fallback) session=%s text=%s", self._session_id, clean)
+            await self._request_stt_flush()
+            self._latest_partial_transcript = ""
+            self._speech_active = False
+            await self._final_transcript(clean, call_started)
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("Turn finalizer worker error session=%s: %s", self._session_id, exc)
+
+    async def _request_stt_flush(self) -> None:
+        flush_fn = getattr(self.stt, "flush", None)
+        if callable(flush_fn):
+            try:
+                await flush_fn()
+            except Exception as exc:
+                logger.debug("STT flush error session=%s: %s", self._session_id, exc)
+
     async def run(self, session_id: str, *, resume: bool = False) -> None:
         if self.repository.get_session(session_id) is None:
             await self._send_json({"type": "voice_error", "detail": "This call session is no longer available."})
@@ -145,7 +365,16 @@ class RealtimeVoiceOrchestrator:
 
             await self._send_json({"type": "connected", "session_id": session_id})
             if not resume:
-                opening = KuralEngine.opening_message()
+                cust_name = "Rahul Sharma"
+                try:
+                    s_rec = self.repository.get_session(session_id)
+                    if s_rec and s_rec.customer_ref:
+                        c_obj = self.repository.get_customer(s_rec.customer_ref)
+                        if c_obj and c_obj.name:
+                            cust_name = c_obj.name
+                except Exception:
+                    pass
+                opening = KuralEngine.opening_message(cust_name)
                 self._recent_assistant_utterances.append(opening)
                 self._is_assistant_speaking = True
                 await self._send_json({
@@ -168,6 +397,8 @@ class RealtimeVoiceOrchestrator:
                         raise error
             finally:
                 self._closed.set()
+                self._cancel_silence_timer()
+                self._cancel_turn_finalizer()
                 if self._pcm_buffer:
                     try:
                         from kural.services.recording_service import save_pcm_to_wav
@@ -185,6 +416,9 @@ class RealtimeVoiceOrchestrator:
                                 cr.duration_sec = int(time.perf_counter() - call_started)
                                 cr.recording_available = True
                                 cr.status = "COMPLETED"
+                                if self._silence_state == "CLOSING":
+                                    cr.disposition = "NO_RESPONSE"
+                                    cr.summary = "Call closed automatically due to customer silence."
                                 s.commit()
                 except Exception as exc:
                     logger.warning("Failed to finalize call record duration for session %s: %s", self._session_id, exc)
@@ -234,8 +468,12 @@ class RealtimeVoiceOrchestrator:
                     elif status == "idle":
                         self._is_client_playing = False
                         self._last_assistant_speech_ended_at = time.perf_counter()
+                        if not self._closed.is_set() and not self._is_assistant_speaking:
+                            self._arm_silence_timer(call_started)
                     continue
                 if kind == "retry_speech":
+                    self._cancel_silence_timer()
+                    self._cancel_turn_finalizer()
                     last_utt = self._recent_assistant_utterances[-1] if self._recent_assistant_utterances else KuralEngine.opening_message()
                     if self._tts_task is not None and not self._tts_task.done():
                         self._tts_task.cancel()
@@ -247,6 +485,8 @@ class RealtimeVoiceOrchestrator:
                 if kind == "user_text":
                     user_utterance = str(control.get("text", "")).strip()
                     if user_utterance:
+                        self._cancel_silence_timer()
+                        self._cancel_turn_finalizer()
                         if self._tts_task is not None and not self._tts_task.done():
                             self._tts_task.cancel()
                             await asyncio.gather(self._tts_task, return_exceptions=True)
@@ -268,21 +508,35 @@ class RealtimeVoiceOrchestrator:
         while not self._closed.is_set():
             event = await self.stt.receive_event()
             event_name = getattr(event, "event", None)
-            if event_name == "vad.speech_start":
+            if event_name in {"vad.speech_start", "speech_start"}:
                 self._speech_started_at = time.perf_counter()
-                # If assistant is currently speaking, do not cancel speech on VAD start alone;
-                # speaker feedback frequently triggers VAD. Wait for transcript confirmation.
+                self._speech_active = True
+                self._cancel_silence_timer()
+                self._cancel_turn_finalizer()
                 if not (self._is_assistant_speaking or self._is_client_playing):
                     await self._send_json({"type": "speech_started"})
             elif event_name == "transcript.partial":
+                self._cancel_silence_timer()
                 if self._speech_started_at is not None:
                     await self._timing("first_stt_partial", self._speech_started_at, log=True)
-                partial_text = getattr(event, "text", "")
+                partial_text = getattr(event, "text", "").strip()
                 if partial_text:
+                    self._latest_partial_transcript = partial_text
+                    self._last_speech_activity_at = time.perf_counter()
                     await self._send_json({
                         "type": "transcript_partial", "text": safe_transcript(partial_text),
                     })
+                    # Schedule silence-based fallback turn finalizer watchdog
+                    self._schedule_turn_finalizer(call_started)
+            elif event_name in {"vad.speech_end", "speech_end"}:
+                self._speech_active = False
+                if self._latest_partial_transcript:
+                    # Endpoint detected by provider VAD! Request STT flush and schedule rapid finalization
+                    await self._request_stt_flush()
+                    self._schedule_turn_finalizer(call_started, debounce_sec=0.25)
             elif event_name == "transcript.final":
+                self._cancel_turn_finalizer()
+                self._cancel_silence_timer()
                 transcript = getattr(event, "text", "").strip()
                 if not transcript:
                     continue
@@ -292,22 +546,28 @@ class RealtimeVoiceOrchestrator:
                 # 1. Reject noise, fillers, single-character hallucinations
                 if clean_lower in DISCARD_NOISE_TOKENS:
                     logger.info("Discarding noise/filler token session=%s: %s", self._session_id, transcript)
+                    if not self._speech_active and self._silence_state == "IDLE" and not (self._is_assistant_speaking or self._is_client_playing):
+                        self._arm_silence_timer(call_started)
                     continue
                 if len(clean) < 2 and clean_lower not in LEGITIMATE_SHORT_REPLIES:
                     logger.info("Discarding low-energy/noise STT transcript session=%s: %s", self._session_id, transcript)
+                    if not self._speech_active and self._silence_state == "IDLE" and not (self._is_assistant_speaking or self._is_client_playing):
+                        self._arm_silence_timer(call_started)
                     continue
                 if len(clean.split()) == 1 and len(clean) < 3 and clean_lower not in LEGITIMATE_SHORT_REPLIES:
                     logger.info("Discarding single-char non-reply token session=%s: %s", self._session_id, transcript)
+                    if not self._speech_active and self._silence_state == "IDLE" and not (self._is_assistant_speaking or self._is_client_playing):
+                        self._arm_silence_timer(call_started)
                     continue
 
-                # 2. Acoustic echo / self-speech suppression
+                # 2. Acoustic echo / self-speech suppression (ONLY while assistant is speaking or acoustic reverberation tail)
                 is_currently_speaking = (
                     self._is_assistant_speaking
                     or self._is_client_playing
-                    or (time.perf_counter() - self._last_assistant_speech_ended_at < 1.2)
+                    or (time.perf_counter() - self._last_assistant_speech_ended_at < 0.4)
                 )
 
-                if is_acoustic_echo(clean, self._recent_assistant_utterances):
+                if is_currently_speaking and is_acoustic_echo(clean, self._recent_assistant_utterances, is_currently_speaking=True):
                     logger.info(
                         "Discarding acoustic echo self-transcription session=%s (is_speaking=%s): %s",
                         self._session_id, is_currently_speaking, transcript,
@@ -326,8 +586,12 @@ class RealtimeVoiceOrchestrator:
                     self._is_client_playing = False
 
                 # 4. Process valid customer turn exactly once
+                self._latest_partial_transcript = ""
+                self._speech_active = False
                 await self._final_transcript(clean, call_started)
             elif event_name == "error":
+                self._cancel_silence_timer()
+                self._cancel_turn_finalizer()
                 logger.warning(
                     "Realtime STT error session=%s code=%s fatal=%s",
                     self._session_id, getattr(event, "code", "unknown"), getattr(event, "is_fatal", False),
@@ -358,6 +622,9 @@ class RealtimeVoiceOrchestrator:
 
             self._last_processed_transcript = clean
             self._last_processed_at = now
+            self._reminder_count = 0  # Reset silence reminder for next turn
+            self._cancel_silence_timer()
+            self._cancel_turn_finalizer()
 
             if self._tts_task is not None and not self._tts_task.done():
                 self._tts_task.cancel()
@@ -429,7 +696,9 @@ class RealtimeVoiceOrchestrator:
 
     async def _start_speech(self, text: str, call_started: float, *, ended: bool,
                             turn_id: int | None = None, is_opening: bool = False,
-                            turn_telemetry_ctx: dict[str, Any] | None = None) -> None:
+                            turn_telemetry_ctx: dict[str, Any] | None = None,
+                            is_silence_prompt: bool = False,
+                            is_silence_closing: bool = False) -> None:
         self._is_assistant_speaking = True
         if is_opening:
             self._is_opening_greeting = True
@@ -440,7 +709,15 @@ class RealtimeVoiceOrchestrator:
             stream = getattr(self.tts, "stream_realtime", None)
             if not callable(stream):
                 await self._send_json({"type": "tts_error", "detail": "Realtime speech output is unavailable; the text response is shown."})
-                await self._send_json({"type": "assistant_done", "ended": ended, "turn": turn_id})
+                await self._send_json({"type": "assistant_done", "ended": ended or is_silence_closing, "turn": turn_id})
+                if is_silence_closing:
+                    self._closed.set()
+                    await self._send_json({"type": "call_ended", "reason": "no_response"})
+                elif ended:
+                    self._closed.set()
+                    await self._send_json({"type": "call_ended", "reason": "conversation_completed"})
+                else:
+                    asyncio.create_task(self._fallback_arm_silence_timer(call_started))
                 return
             first_chunk = True
             try:
@@ -509,10 +786,15 @@ class RealtimeVoiceOrchestrator:
             await self._timing("final_audio", tts_started, log=True)
             elapsed_full_turn_ms = (time.perf_counter() - call_started) * 1000.0
             metrics_registry.turn_latency_full_ms.observe(elapsed_full_turn_ms)
-            await self._send_json({"type": "assistant_done", "ended": ended, "turn": turn_id})
-            if ended:
+            await self._send_json({"type": "assistant_done", "ended": ended or is_silence_closing, "turn": turn_id})
+            if is_silence_closing:
+                self._closed.set()
+                await self._send_json({"type": "call_ended", "reason": "no_response"})
+            elif ended:
                 self._closed.set()
                 await self._send_json({"type": "call_ended", "reason": "conversation_completed"})
+            else:
+                asyncio.create_task(self._fallback_arm_silence_timer(call_started))
         finally:
             self._is_assistant_speaking = False
             self._last_assistant_speech_ended_at = time.perf_counter()
