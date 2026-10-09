@@ -1,10 +1,10 @@
 # AVA Phase 4 Architecture Specification
 ## Security, Production Hardening & Scale
 
-**Document Version:** 1.0.1  
+**Document Version:** 1.0.2  
 **Baseline Git Tag:** `phase3-accepted-frozen`  
 **Baseline Git Commit:** `59edf51`  
-**Status:** Under Design Review (Design-Only Milestone)  
+**Status:** Under Final Architecture Review (Design-Only Milestone)  
 **Target Phase:** Phase 4 Production Hardening  
 
 ---
@@ -13,18 +13,20 @@
 
 Phase 4 hardens the validated AVA prototype into a production-grade, regulatory-compliant banking voice agent. All Phase 4 designs strictly preserve the accepted Phase 3 baseline (`phase3-accepted-frozen`, commit `59edf51`, 173/173 tests passing) and enforce non-negotiable architectural invariants:
 
-1. **Deterministic Authority:** The KURAL Finite State Machine (FSM) remains the sole authority for state transitions, business logic, policy enforcement, and tool dispatching.
-2. **LLM as Semantic Layer Only:** The LLM performs intent classification, structured entity extraction, and conversational synthesis within closed-world retrieved contexts. The LLM has zero direct access to databases, cannot issue SQL, and cannot trigger actions without deterministic KURAL validation.
-3. **Voice Stack Preservation:** Sarvam Saaras v4 STT and Bulbul v3 TTS remain the primary voice pipeline.
-4. **Provider-Agnostic LLM Interface:** The multi-provider contract remains swappable across Qwen 3.8 27B, GPT-OSS 20B, and Gemini 3.6 Flash, with deterministic offline fallbacks.
-5. **No Premature Infrastructure:** No vector databases, microservices, or external message brokers (e.g., Kafka, Celery, Redis). Production scale and durability are achieved using PostgreSQL 16, connection pooling, and a transactional outbox pattern.
+1. **Deterministic Authority:** The KURAL Finite State Machine (FSM) remains the sole authority for state transitions, business logic, policy enforcement, tool dispatching, and spoken conversational turns.
+2. **LLM as Semantic Layer Only:** The LLM performs intent classification and structured entity extraction within closed-world retrieved contexts. The LLM has zero direct access to databases, cannot issue SQL, cannot execute tools, and cannot trigger actions without deterministic KURAL validation.
+3. **Voice Stack Preservation:** Sarvam Saaras STT and Bulbul v3 TTS remain the primary voice pipeline baseline.
+4. **Provider-Agnostic LLM Interface:** The multi-provider contract remains swappable across Qwen 3.8 27B, GPT-OSS 20B, and Gemini 3.8 Flash, backed by deterministic offline fallbacks.
+5. **No Premature Infrastructure:** No vector databases, microservices, or external message brokers (e.g., Kafka, Celery, Redis). Production durability and concurrency are achieved using PostgreSQL 16, connection pooling, and a transactional outbox pattern.
 6. **Simulated Telephony Boundary:** Real PSTN/SIP trunking is strictly deferred to Phase 5. Phase 4 dialers execute within controlled simulation harnesses.
+7. **Fail-Closed Governance:** Every security, compliance, cryptographic, or operational uncertainty fails closed. Unsafe fallback modes (such as disabling authentication, writing plaintext PII, or reverting to permissive dialing windows) are permanently prohibited.
 
 ---
 
-## 2. Threat Model & Trust Boundaries
+## 2. Threat Model, Trust Boundaries & Voice-Provider Data Boundary
 
-### 2.1 System Trust Boundaries
+### 2.1 System Trust Boundaries & Data Flow
+
 The AVA architecture defines four distinct trust zones separated by explicit security boundaries:
 
 ```
@@ -49,248 +51,224 @@ The AVA architecture defines four distinct trust zones separated by explicit sec
    ▼
 [ SECURE INTERNAL CORE ]
    ├── PostgreSQL 16 (AES-256-GCM Envelope Encryption at Rest)
-   ├── Chunk-Encrypted Audio Recording Vault (Local FS / Object Storage)
-   ├── Append-Only Tamper-Evident Audit Ledger (Cryptographic HMAC Chaining)
+   ├── Chunk-Encrypted Audio Recording Vault (Per-Recording DEK)
+   ├── Append-Only Tamper-Evident Audit Ledger (Monotonic HMAC Chaining)
    └── Cloud KMS / HSM (Hardware Key Encryption Key Protection)
 ```
 
-### 2.2 STRIDE Threat Analysis & Mitigations
+### 2.2 Voice-Provider Data Boundary & Raw Audio Reality
+
+A fundamental security reality in voice AI systems is that **raw audio enters the system before automated text-based redaction can execute**:
+
+```
+Customer Spoken Audio (Contains Potential OTP, Card No., PIN)
+       │
+       ▼
+[ Web Audio PCM Stream (16kHz LINEAR16) ]
+       │
+       ▼ (Egress over WebSocket / TLS 1.3)
+[ Speech-to-Text Engine (STT) ] ◄── MUST TRANSCRIBE BEFORE REDACTION IS POSSIBLE
+       │
+       ▼
+Raw Text Transcript ("My OTP is 4 9 2 0 1 8")
+       │
+       ▼
+[ KURAL Regex Redactor & PII Tokenizer ] ◄── FIRST POINT WHERE CREDENTIALS CAN BE STRIPPED
+       │
+       ▼
+Sanitized Text ("My OTP is [REDACTED_OTP]")
+       │
+       ▼ (Egress to LLM)
+[ Multi-Provider LLM (Qwen / GPT-OSS / Gemini) ]
+```
+
+Because customers may speak authentication credentials (OTPs, PINs, card numbers, Aadhaar) during an interaction, raw audio transmitted to an external STT service contains sensitive payment credentials. **Redacting transcripts post-STT does NOT protect raw audio in transit to or at rest within an external STT provider.**
+
+#### Architectural Options for Voice Processing
+
+To address this boundary honestly and rigorously, AVA defines two explicit architectural models:
+
+* **Option A: Bank-Controlled Boundary Deployment (Canonical Requirement)**
+  - The speech-to-text model (e.g., self-hosted Sarvam Saaras container, or optimized Whisper-large-v3-turbo) is deployed entirely inside Town Bank's private VPC or on-premises security perimeter.
+  - Zero raw audio traverses the public internet or external third-party servers.
+  - All spoken credentials remain strictly within the bank's boundary.
+  - **Compliance Status:** **Option A is the ONLY architecture that inherently satisfies AVA's strict bank-data-boundary invariant and RBI master directions on digital payment data localization.**
+
+* **Option B: Documented External-Processing Exception (SaaS Provider)**
+  - Raw audio is streamed to an external cloud STT provider (Sarvam AI SaaS endpoint) over TLS 1.3, and sanitized transcripts are dispatched to cloud LLMs (Groq, Gemini).
+  - Permitted **STRICTLY AND EXCLUSIVELY** under an active, formal bank compliance exception requiring:
+    1. Executed Data Protection Agreement (DPA) and Business Associate Agreement with Sarvam AI and LLM vendors.
+    2. Zero-Retention Guarantee: Legally binding vendor commitment that audio streams, intermediate tokens, and transcripts are processed strictly in volatile memory and never persisted, cached, or used for model training.
+    3. Indian Data Localization: Vendor compute must reside strictly within Indian sovereign territory (e.g., AWS `ap-south-1` / MeitY-empanelled cloud).
+    4. Written risk acceptance signed by Town Bank Chief Information Security Officer (CISO) and Legal Counsel.
+
+**Policy Directive:** Option B is approved exclusively for synthetic testing and development evaluation. **External processing of real customer voice data is strictly disabled until the formal Option B bank approvals exist or Option A on-premises containers are deployed.**
+
+---
+
+## 3. Threat Analysis & Trust Boundaries (STRIDE)
 
 | Threat Category | Attack Vector | Potential Impact | AVA Phase 4 Mitigation |
 | :--- | :--- | :--- | :--- |
-| **Spoofing** | Attacker impersonates bank operator or injects rogue audio into active session. | Unauthorized access to customer records or spoofed call completion. | Asymmetric RS256 JWT with short expiry; single-use 30s WebSocket ticket bound to specific user and `session_id`; TOTP MFA for operators. |
-| **Tampering** | Rogue actor or insider alters call audit logs, DND status, or campaign outcomes. | Regulatory non-compliance, concealed fraud, corrupted audit evidence. | Append-only audit table with database-level `REVOKE UPDATE, DELETE`; HMAC-SHA256 sequential hash chaining; daily offsite WORM sealing. |
-| **Repudiation** | Operator denies unmasking customer PII or modifying campaign pacing. | Inability to establish regulatory accountability under RBI/DPDP guidelines. | Mandatory justification logged to immutable audit ledger prior to any PII unmasking; actor IP and timestamp cryptographically sealed. |
-| **Information Disclosure** | Leakage of Aadhaar, PAN, card numbers, or customer phone via logs, LLM prompts, or database theft. | DPDP Act violations, identity theft, financial loss. | Pre-ingestion dynamic PII scrubber; AES-256-GCM envelope encryption with AAD; keyed blind indexes for lookups; no plaintext PII to external LLMs. |
-| **Denial of Service** | Volumetric flooding of voice WebSockets or campaign contact queuing. | Exhaustion of server memory, voice orchestrator worker starvation. | Strict IP/session rate limiting; connection quotas; single-use WebSocket tickets; backpressure on audio queues; PgBouncer connection pooling. |
-| **Elevation of Privilege** | Frontline Agent attempts campaign deletion or audit log inspection. | Unauthorized system modification, bypass of compliance controls. | Strict FastAPI RBAC dependencies (`require_role`, `require_permission`); branch-level and tenant-level attribute scoping. |
+| **Spoofing** | Forged JWT access token or replayed WebSocket ticket. | Unauthorized access to call logs, recordings, or live operational controls. | Asymmetric RS256 JWT validation via public JWKS; single-use 30s WebSocket ticket burned atomically upon connection. |
+| **Tampering** | Modification of call transcripts or audit event rows in database. | Loss of regulatory audit integrity; hiding fraud or misconduct. | Monotonic HMAC-SHA256 hash chaining on `operations_audit_events`; database triggers revoking `UPDATE`/`DELETE`; periodic WORM sealing. |
+| **Repudiation** | Operator claims an unauthorized callback or PII export was automated. | Inability to attribute administrative actions during audits. | Strict RBAC context logged on every action; IP address, actor ID, and cryptographic signature captured in immutable audit ledger. |
+| **Information Disclosure** | SQL injection, unencrypted database theft, or raw audio exfiltration. | Exposure of customer phone numbers, voice recordings, and conversation turns. | Column-level AES-256-GCM envelope encryption with context AAD; keyed HMAC blind indexes; per-recording 64KB chunk encryption with completion manifests. |
+| **Denial of Service** | WebSocket connection exhaustion or slowloris audio streaming. | Server starvation; dropping legitimate customer voice sessions. | PgBouncer transaction pooling; per-IP rate limiting; strict 30s ticket TTL; fixed pool of audio orchestrator workers with backpressure drops. |
+| **Elevation of Privilege** | Compromised agent account attempts campaign configuration or audit purge. | Unauthorized mass dialing or destruction of compliance evidence. | Explicit non-hierarchical permission matrix; strict FastAPI role dependencies; segregation of duties separating `SYSTEM_ADMIN` from customer data. |
 
 ---
 
-## 3. Explicit Data Flows & Sensitive-Data Inventory
+## 4. Authentication, Authorization & Session Management
 
-### 3.1 Sensitive-Data Field Inventory
+### 4.1 Hybrid Identity Architecture
+* **Default Internal Identity:** Argon2id password hashing (`time_cost=3`, `memory_cost=65536`, `parallelism=4`) with database-backed user credentials.
+* **Enterprise SSO Adapter:** OpenID Connect (OIDC) Authorization Code Flow with PKCE for enterprise bank IdPs (PingFederate, Keycloak, Azure AD).
+* **Token Structure:** Stateless JSON Web Tokens signed using asymmetric `RS256` (RSA 2048-bit minimum) or `Ed25519`. Public verification keys are exposed via `/.well-known/jwks.json`.
 
-| Table Name | Column Name | Classification | Storage Format | Encryption / Protection Mechanism | Plaintext Justification |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `customers` | `phone` | Direct PII | Encrypted String | AES-256-GCM + Blind Index (`phone_bidx`) | Plaintext prohibited. Lookups use HMAC blind index. |
-| `customers` | `full_name` | Direct PII | Encrypted String | AES-256-GCM (`full_name_enc`) | Plaintext prohibited. Masked representation in cache. |
-| `customers` | `email` | Direct PII | Encrypted String | AES-256-GCM (`email_enc`) | Plaintext prohibited. |
-| `customers` | `customer_ref` | Internal Pseudonym | Plaintext String | Pseudorandom opaque UUID (`CUST-XXXXX`) | **Permitted Plaintext:** Non-reversible external business reference; necessary for join indexes. |
-| `customers` | `dnd_status` | Operational Metadata | Plaintext Boolean | Boolean Flag (`true`/`false`) | **Permitted Plaintext:** Low sensitivity; required for high-frequency filtering in dialing queries. |
-| `customers` | `account_type` | Operational Metadata | Plaintext String | Enum (`SAVINGS`, `CURRENT`) | **Permitted Plaintext:** Required for operational reporting and campaign segmentation. |
-| `call_records` | `masked_phone` | Partial PII | Plaintext String | Masked display format (`+91 98XXX XX012`) | **Permitted Plaintext:** Irreversible mask retaining only prefix/last 2 digits for operator verification. |
-| `call_records` | `summary` | Indirect PII | Redacted Text | Pre-persistence PII scrubber (`[REDACTED_*]`) | Plaintext prohibited if containing raw credentials or unmasked phones. |
-| `call_records` | `recording_path` | Sensitive Reference | Encrypted Pointer | AES-256-GCM (`recording_path_enc`) | Plaintext prohibited. Points to chunk-encrypted audio vault. |
-| `conversation_turns` | `sanitized_user_text` | Intermediate PII | Redacted Text | In-memory redaction before persistence | Plaintext credentials prohibited. Plaintext conversational text permitted after scrubbing. |
-| `cases` | `key_lines`, `actions_tried`| Operational Context | Redacted JSON | In-memory redaction before persistence | Required for agent triage; stripped of financial credentials. |
-| `storage/recordings/`| Audio WAV files | Biometric / Audio PII| Chunk-Encrypted | AES-256-GCM streaming encryption (64KB chunks) | Plaintext on disk prohibited. |
-
-### 3.2 End-to-End Data Flow Map
-1. **Audio Ingestion:** Customer PCM audio streams over TLS 1.3 WebSocket.
-2. **Streaming Redaction:** As STT emits partial/final transcripts, raw text enters the **In-Memory PII Tokenizer**. Credentials (OTPs, PINs, cards, Aadhaar, PAN) are replaced with `[REDACTED_*]` tokens.
-3. **Intent Extraction:** Sanitized text is sent to the LLM. Zero plaintext credentials leave the application boundary.
-4. **Deterministic Evaluation:** KURAL FSM validates intent against current state, policy rules, and authorized actions.
-5. **Database Persistence:**
-   - Sensitive fields are encrypted using AES-256-GCM with Authenticated Additional Data (AAD).
-   - Blind indexes are calculated via HMAC-SHA256 for exact-match searchability.
-   - Domain row mutation and Outbox event record are committed in the same database transaction.
-6. **Recording Storage:** In-flight audio buffers are encrypted in 64KB chunks using AES-256-GCM and written to the secure audio vault.
-7. **Audit Logging:** An operations audit record is created, hash-chained with the preceding record, and persisted to the immutable audit table.
-
----
-
-## 4. Authentication, Authorization & RBAC
-
-### 4.1 Concrete Identity Architecture: Hybrid Architecture
-To balance standalone enterprise on-premises deployments with enterprise bank Single Sign-On (SSO):
-* **Default Internal Provider:** Argon2id / PBKDF2-HMAC-SHA256 password authentication with database-backed credential storage, user management, and salted hashes.
-* **Enterprise OIDC Adapter:** Plug-and-play OpenID Connect Authorization Code Flow with PKCE for banks integrating with Keycloak, PingFederate, Okta, or Azure AD.
-* **Token Structure:** Stateless JSON Web Tokens signed using asymmetric `RS256` (RSA 2048-bit minimum) or `Ed25519`. Public keys are distributed via a standard JWKS endpoint (`/.well-known/jwks.json`).
-
-### 4.2 Token Issuance, Storage & Rotation Architecture
+### 4.2 Token Issuance, Refresh-Token Cookie & Session Semantics
 1. **Access Token:**
    - **Lifetime:** Exactly 15 minutes.
-   - **Storage:** Stored exclusively in browser memory (JavaScript state). Never persisted to `localStorage`, `sessionStorage`, or IndexedDB.
-   - **Claims:** `sub` (user_id), `username`, `role`, `branch_id`, `tenant_id`, `exp`, `iat`, `jti`.
-2. **Refresh Token & Cookie Security Properties:**
-   - **Lifetime:** Exactly 8 hours (configurable to shift duration).
-   - **Storage Mechanism:** Transmitted in an `HttpOnly`, `SameSite=Strict`, `Secure` cookie named `__Host-ava_refresh_token` with `Path=/api/auth`.
-   - **Clarification on Cookie Cryptography:** An `HttpOnly` cookie protects against client-side script extraction (XSS mitigation) and `SameSite=Strict` prevents ambient transmission during cross-site requests (CSRF mitigation). **Browsers do not encrypt cookie contents on the client filesystem.** Therefore:
-     - The refresh token value is an opaque, high-entropy 256-bit cryptographically secure token (`secrets.token_urlsafe(32)`).
-     - Only the **SHA-256 hash** of the token is stored in the database (`refresh_tokens` table).
-     - A stolen raw cookie cannot be decrypted into database records.
-3. **Token Rotation & Automated Reuse Detection:**
-   - Each refresh token belongs to a `token_family_id`.
-   - Upon calling `POST /api/auth/refresh`, the presented token is consumed and revoked, and a newly generated refresh token is issued within the same family.
-   - If an already-revoked refresh token is presented (indicating theft and replay), the system triggers an **Automated Token Reuse Alert**:
-     - The entire token family is immediately revoked in the database.
-     - All active sessions for that user are terminated.
-     - A `SECURITY_ALERT` is written to the immutable audit ledger.
-4. **Logout & Revocation:**
-   - Calling `POST /api/auth/logout` sets `revoked = true` on the token family in the database and clears the browser cookie with an expired `Set-Cookie` header.
+   - **Storage:** Stored exclusively in browser memory (JavaScript state). Never written to `localStorage`, `sessionStorage`, or IndexedDB.
+   - **Claims:** `sub` (user_id), `username`, `role`, `branch_id`, `tenant_id`, `family_id`, `token_version`, `exp`, `iat`, `jti`.
+2. **Refresh Token & Strict Cookie Configuration:**
+   - **Lifetime:** 8 hours (aligned with standard bank operator shift).
+   - **Cookie Name:** `__Host-ava_refresh_token`
+   - **Mandatory Cookie Attributes (RFC 6265bis):**
+     - `Secure`: Mandatory (cookie sent only over TLS 1.3).
+     - `HttpOnly`: Mandatory (inaccessible to JavaScript, mitigating XSS).
+     - `SameSite=Strict`: Mandatory (blocks cross-site transmission, mitigating CSRF).
+     - `Path=/`: Mandatory (must be exactly `/` to satisfy browser `__Host-` prefix validation).
+     - `Domain`: **MUST NOT BE PRESENT** (browser rejects `__Host-` cookies containing any `Domain` attribute).
+   - **Server Storage:** The database stores only the `SHA-256` hash of the refresh token in `refresh_tokens`, salted per entry.
+3. **Token Family Reuse Detection & Concurrent Refresh Race Handling:**
+   - Each refresh token belongs to a cryptographically unique `family_id` with a monotonic generation number.
+   - **Legitimate Concurrent Refresh Tolerance (Grace Window):** When multiple frontend components request data simultaneously as the access token expires, multiple refresh calls may hit the server concurrently. To prevent false-positive alarms:
+     - Upon successful refresh of Token $T_n$, the server issues $T_{n+1}$ and marks $T_n$ with `replaced_at = NOW()`.
+     - A strict **15-second grace window** is permitted: if a concurrent request presents $T_n$ within 15 seconds of `replaced_at`, the server returns the already-issued active token pair without raising an alarm.
+   - **Malicious Reuse Detection:** If an invalidated token is presented *after* the 15-second grace window (or if an older generation in the family is presented):
+     - The event is classified as an active replay attack.
+     - The entire `family_id` is immediately revoked in the database (`revoked = true`).
+     - An emergency `SECURITY_ALERT` is written to the immutable audit ledger.
+     - All active sessions for that user are terminated immediately.
+4. **Immediate Revocation of Already-Issued Access JWTs:**
+   - Stateless JWTs cannot be revoked client-side. To ensure compromised token families or locked users are barred immediately:
+     - Each user record maintains an integer `token_version`.
+     - Revoking a user's sessions increments `user.token_version` and publishes the revoked `family_id` / `jti` to an in-memory / database blocklist cache with a 15-minute TTL (the access token lifespan).
+     - The FastAPI authentication dependency (`get_current_user`) checks the token's `family_id` against the blocklist and verifies `token.token_version == user.token_version`. Compromised tokens are rejected in $< 1 \text{ ms}$.
+5. **MFA Enforcement & Recovery:**
+   - **Mandatory MFA:** Privileged roles (`SYSTEM_ADMIN`, `SUPERVISOR`, `COMPLIANCE_OFFICER`) MUST configure TOTP (RFC 6238) or FIDO2 WebAuthn before accessing protected routes.
+   - **Backup Recovery Codes:** 8 cryptographically random single-use backup recovery codes generated at provisioning, stored PBKDF2-hashed in the database, and invalidated upon first use.
+   - **Admin Bootstrap:** Prohibit default passwords. Initial administrator provisioning occurs strictly via an offline CLI utility (`python -m kural.cli init-admin`) requiring console access, or an ephemeral single-use environment secret that expires 10 minutes after container boot.
 
-### 4.3 CSRF, CORS & Rate Limiting Controls
-* **CSRF Mitigation:** All state-changing endpoints accept authentication exclusively via the `Authorization: Bearer <token>` header, rendering ambient cross-site cookie attacks ineffective. For the cookie-based refresh and logout endpoints, strict `Origin` and `Referer` validation against the configured allowed-origin whitelist is enforced.
-* **CORS Whitelist:** Explicit CORS configuration rejecting wildcard (`*`) origins when credentials are supported.
-* **Rate Limiting:**
-  - Login endpoint (`POST /api/auth/login`): Maximum 5 attempts per minute per IP.
-  - Account lockout: 5 consecutive failed attempts trigger a 15-minute account lock with audit event generation.
-* **MFA Recovery:** Operators configured with TOTP (RFC 6238) receive 8 single-use cryptographically random backup recovery codes at provisioning. Backup codes are stored hashed (PBKDF2) in the database and invalidated on first use.
-* **Initial Admin Provisioning:** Production deployments prohibit hardcoded default credentials. Initial administrative provisioning occurs via an explicit CLI command (`python -m kural.cli init-admin --username <name>`) or a single-use bootstrap environment token that expires 10 minutes after container boot.
+### 4.3 Single-Use WebSocket Ticket Architecture
+To prevent access tokens from leaking into web server access logs, browser history, or proxy telemetry via WebSocket query parameters:
+1. **Ticket Request:** Authenticated browser issues `POST /api/auth/ws-ticket` with its Bearer JWT. Body: `{"session_id": "SES-12345"}`.
+2. **Issuance:** Server validates authorization, generates a 256-bit cryptographically secure token (`secrets.token_urlsafe(32)`), and stores:
+   `ticket_hash = SHA256(ticket)`, `session_id`, `user_id`, `expires_at = NOW() + 30s`, `consumed = false`.
+3. **Handshake & Atomic Burn:** Client connects to `GET /ws/voice/SES-12345?ticket=<ticket>`. The server validates the hash and atomically marks `consumed = true` in a single transaction.
+4. **Replay Protection:** Re-submitting the same ticket fails immediately with HTTP 403 / WebSocket code 1008.
 
-### 4.4 Single-Use WebSocket Ticket Architecture
-To prevent long-lived JWTs from leaking into web server access logs, browser history, or proxy telemetry via query parameters:
-1. **Ticket Request:** Authenticated browser client issues a `POST /api/auth/ws-ticket` request with its Bearer JWT. Body: `{"session_id": "SES-12345"}`.
-2. **Issuance:** Server validates caller authorization for `session_id`, generates a 256-bit cryptographically random ticket (`secrets.token_urlsafe(32)`), and stores it in cache/DB with:
-   - `ticket_hash = SHA256(ticket)`
-   - `session_id = "SES-12345"`
-   - `user_id = caller_id`
-   - `expires_at = NOW() + 30 seconds`
-   - `consumed = false`
-3. **Transport:** Client opens WebSocket connection: `GET /ws/voice/SES-12345?ticket=<ticket>`.
-4. **Validation & Atomic Burn:** Server hashes incoming ticket, checks matching `session_id`, verifies `expires_at > NOW()`, and atomically marks `consumed = true`. The ticket is burned on single use.
-5. **Replay Protection:** Re-submitting the ticket fails immediately with HTTP 403 / WebSocket close code 1008.
-6. **Log Redaction:** Reverse proxy (Nginx) and ASGI server (Uvicorn) logging configurations are explicitly configured to strip the query string on `/ws/voice/*` endpoints:
-   ```nginx
-   # Redact sensitive ticket query parameters in reverse proxy logs
-   log_format redacted '$remote_addr - $remote_user [$time_local] "$request_method $uri" $status $body_bytes_sent';
-   access_log /var/log/nginx/access.log redacted;
-   ```
+### 4.4 Explicit Role-Based Permission Matrix (Segregation of Duties)
 
-### 4.5 Role-Based & Attribute-Based Access Control Matrix
+To enforce least privilege, hierarchical role inheritance is replaced with an explicit, non-hierarchical permission matrix. **`SYSTEM_ADMIN` is strictly segregated from customer financial data and conversation records.**
 
-```
-       [SYSTEM_ADMIN]
-             │
-             ├── [SUPERVISOR]
-             │         │
-             │         ├── [AGENT]
-             │         └── [ANALYST]
-             │
-       [COMPLIANCE_OFFICER] (Orthogonal Audit Authority)
-```
-
-| Role | Permitted Operations | Endpoint Scope | Branch / Data Scoping |
-| :--- | :--- | :--- | :--- |
-| **`ANALYST`** | Read aggregate KPIs, operational summaries, anonymized metrics. | `GET /api/reports/*`, `GET /api/insights` | Organization-wide, but strictly aggregated/masked data. Zero customer PII access. |
-| **`AGENT`** | View assigned calls, update call notes, process scheduled callbacks. | `GET /api/calls/{id}`, `POST /api/callbacks/{id}/resolve` | Strictly scoped to customer records where `assigned_agent_id = user.id` and `branch = user.branch`. |
-| **`SUPERVISOR`** | Create/start/pause campaigns, reassign callbacks, inspect live calls. | `POST /api/campaigns/*`, `PATCH /api/callbacks/*` | Scoped to assigned region or branch cluster (`user.region`). |
-| **`COMPLIANCE_OFFICER`** | Inspect audit trail, verify tamper-evidence, review DND blocks, request audited unmasking. | `GET /api/audit/*`, `POST /api/compliance/unmask` | Organization-wide read-only. Unmasking customer PII requires mandatory written audit justification. |
-| **`SYSTEM_ADMIN`** | User provisioning, migration execution, system health inspection, worker config. | `POST /api/admin/*`, `GET /api/health/deep` | Infrastructure operations only. Direct access to customer banking tables prohibited. |
+| Permission / Operation | `ANALYST` | `AGENT` | `SUPERVISOR` | `COMPLIANCE_OFFICER` | `SYSTEM_ADMIN` |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **View Aggregated Reports & KPIs** | ✅ | ❌ | ✅ | ✅ | ❌ |
+| **View Assigned Call Details & Notes** | ❌ | ✅ (Assigned only) | ✅ (Region cluster) | ✅ (Read-only) | ❌ |
+| **Initiate Click-to-Call / Process Callback** | ❌ | ✅ (Assigned only) | ✅ (Reassign) | ❌ | ❌ |
+| **Create / Pause / Cancel Campaigns** | ❌ | ❌ | ✅ | ❌ | ❌ |
+| **Manage DND Suppression Lists** | ❌ | ❌ | ❌ | ✅ | ❌ |
+| **Inspect Immutable Audit Ledger** | ❌ | ❌ | ❌ | ✅ | ❌ |
+| **Request Audited PII Unmasking** | ❌ | ❌ | ❌ | ✅ (Requires reason) | ❌ |
+| **Manage Infrastructure, DB & Workers** | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Provision Operators & Assign Roles** | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Trigger Schema Migrations** | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Direct Access to Customer Banking Data** | ❌ | ❌ | ❌ | ❌ | ❌ (Strictly Prohibited) |
 
 ---
 
-## 5. Data Protection & Cryptography
+## 5. Data Protection, Cryptography & Recording Vault
 
 ### 5.1 Envelope Encryption & Key Lifecycle
-* **Cryptographic Primitive:** AES-256-GCM (Galois/Counter Mode) with 96-bit unique random nonces (IVs) and 128-bit authentication tags.
-* **Key Hierarchy:**
-  1. **Key Encryption Key (KEK):** Stored in Hardware Security Module (HSM) or Cloud KMS (Google Cloud KMS / AWS KMS). Never leaves the secure module.
-  2. **Data Encryption Key (DEK):** 256-bit random key generated per epoch (monthly) or per tenant. DEKs are encrypted by the KEK and stored in a secure `key_store` table.
+* **Primitive:** AES-256-GCM with 96-bit unique random nonces and 128-bit authentication tags.
+* **Key Hierarchy & Granularity:**
+  1. **Key Encryption Key (KEK):** Held in HSM or Cloud KMS (Google Cloud KMS / AWS KMS). Never leaves the secure module.
+  2. **Table/Epoch Data Encryption Key (DEK):** 256-bit key used for database fields (customer phone, email, notes).
+  3. **Per-Recording DEK:** Every audio recording generates a unique, dedicated DEK.
+     - *Cryptographic Shredding Advantage:* Satisfies DPDP Act / GDPR right-to-erasure. Deleting a specific recording's DEK in KMS renders that specific audio permanently unrecoverable, without requiring destructive physical disk overwrites or impacting other customer data.
 * **Ciphertext Wire Format:**
   $$\text{enc:v1}:\langle\text{key\_id}\rangle:\text{base64}(\text{Nonce}_{12} \parallel \text{Ciphertext} \parallel \text{Tag}_{16})$$
-* **Authenticated Additional Data (AAD):**
-  To prevent **Ciphertext Transplantation Attacks** (where an attacker moves an encrypted phone number from one customer's row to another), the AAD is bound to the encryption context:
+* **Authenticated Additional Data (AAD) Context Binding:**
+  To prevent ciphertext transplantation attacks across rows, the AAD is bound to the entity context:
   $$\text{AAD} = \text{"customers:phone:"} \parallel \text{customer\_ref}$$
-  If a ciphertext is transplanted to a different row, AES-GCM tag verification fails immediately.
-* **Key Rotation:** Periodic rotation updates the KEK in KMS. DEKs are re-wrapped under the new KEK without requiring full re-encryption of all database tables. Re-encryption of table records occurs lazily or via background compaction.
-* **Backup Protection:** Database backups are encrypted with a separate offsite backup public key before export.
+* **Plaintext Write Policy:** **Production write paths MUST NEVER fall back to plaintext.** If KMS is unreachable or encryption fails, the transaction aborts. Plaintext reading is supported strictly for one-way legacy migration from Phase 1–3 databases and is certified disabled post-cutover.
 
-### 5.2 Searchable Encryption via Keyed Blind Indexes
-Because encrypted fields (`AES-256-GCM`) produce non-deterministic ciphertexts due to unique nonces, direct SQL exact-match queries (`WHERE phone = :p`) would require full table decryption.
-* **Blind Index Design:**
-  - A dedicated, cryptographically separate **Blind Index Key (BIK)** is generated and held in KMS.
-  - The blind index is calculated as:
-    $$\text{phone\_bidx} = \text{HMAC-SHA256}(\text{BIK}, \text{NormalizeE164}(\text{phone}))$$
-  - Stored in the database as a fixed-length string: `phone_bidx CHAR(64) UNIQUE INDEX`.
-  - The plaintext phone is stored envelope-encrypted in `phone_enc TEXT`.
-* **Query Execution:**
-  ```sql
-  -- Search executes against the one-way HMAC blind index with zero plaintext exposure
-  SELECT customer_ref, phone_enc FROM customers WHERE phone_bidx = :calculated_bidx;
-  ```
-  The database never learns the customer's phone number, yet index lookups execute in sub-millisecond B-Tree time.
+### 5.2 Keyed Blind Indexes for Searchable Encryption
+* Direct exact-match SQL queries on encrypted phone numbers (`WHERE phone = :p`) would require full table scans.
+* **Mechanism:** A separate Blind Index Key (BIK) in KMS computes:
+  $$\text{phone\_bidx} = \text{HMAC-SHA256}(\text{BIK}, \text{NormalizeE164}(\text{phone}))$$
+* Stored in the database as `phone_bidx CHAR(64) UNIQUE INDEX`. B-tree lookups execute in sub-millisecond time with zero plaintext exposure to the database engine.
 
-### 5.3 Recording Chunk-Level Encryption
-Call recording WAV files represent sensitive voice biometric data and must never sit in plaintext on disk:
-* **Streaming AES-256-GCM:** Incoming audio streams are encrypted in sequential 64KB chunks.
-* **Nonce Uniqueness & Reorder Protection:**
-  Each chunk uses a dedicated nonce derived from a session base nonce and a 64-bit chunk sequence counter. The chunk counter is bound into the chunk's AAD:
-  $$\text{AAD}_{\text{chunk}} = \text{session\_id} \parallel \text{chunk\_index}$$
-  This prevents an attacker from reordering, truncating, or splicing audio chunks.
-* **Handling Interrupted Writes:**
-  If a call drops or the process terminates abruptly, all chunks written up to the failure point remain fully authentic and decryptable up to the last flushed chunk.
-* **Decryption Authorization:** Playback endpoints (`GET /api/recordings/{session_id}`) require authenticated `AGENT` (assigned call), `SUPERVISOR`, or `COMPLIANCE_OFFICER` roles with explicit audit logging of every stream access.
+### 5.3 Recording Chunk-Level Encryption & Completion Manifests
+* **Streaming Chunks:** Incoming audio is encrypted in sequential 64KB chunks under the per-recording DEK.
+* **Monotonic Nonce Construction:**
+  $$\text{Nonce}_{\text{chunk}} = \text{BaseNonce}_{32} \parallel \text{BigEndian64}(\text{chunk\_index})$$
+  Chunk index is bound into the chunk's AAD: $\text{AAD} = \text{session\_id} \parallel \text{chunk\_index}$. This eliminates nonce collision and prevents chunk reordering or splicing.
+* **Authenticated Recording-Completion Manifest:**
+  To detect missing or truncated trailing chunks (e.g. an attacker stripping an operator's disclosure or customer's refusal):
+  - Upon clean call termination, an authenticated manifest chunk is written:
+    $$\text{Manifest} = \{\text{session\_id}, \text{total\_chunks}, \text{total\_bytes}, \text{sha256\_digest}, \text{completed\_at}\}$$
+  - The manifest is authenticated with an AES-GCM tag under the recording DEK.
+  - The playback service checks $\text{Actual Chunks Read} == \text{Manifest.total\_chunks}$. If trailing chunks are missing, the playback engine raises `RECORDING_TRUNCATED_TAMPERED` and blocks playback.
+  - Dropped or interrupted calls are explicitly flagged `STATUS = INCOMPLETE_DROPPED`, documenting the exact flushed chunk count without claiming clean completion.
 
-### 5.4 Pre-Ingestion Redaction & Memory Protection
-* **Redaction Pipeline:** String tokenizer executes immediately upon receiving text from STT or HTTP input. Sensitive patterns (12-digit Aadhaar, 10-char PAN, 16-digit Card Numbers, OTPs/PINs) are stripped *before* strings are passed to:
-  1. Internal log formatters (`logging`).
-  2. External AI providers (Sarvam, Groq, Gemini).
-  3. Database turn persistence (`conversation_turns`).
-  4. CSV/PDF export generation.
-* **Memory & Secret Handling Realities:**
-  Python strings are immutable and interned; claiming to reliably overwrite or zero Python string objects in memory is technically inaccurate. Phase 4 implements realistic, enterprise-grade memory protection:
-  - Cryptographic keys are handled strictly as mutable `bytearray` buffers and cleared (`buffer[:] = b'\x00' * len(buffer)`) immediately after cipher instantiation.
-  - Process memory core dumps are disabled in Linux container environments via `prctl(PR_SET_DUMPABLE, 0)`.
-  - Exception handlers strictly suppress stack frame locals from dumping secrets into error logs.
-
-### 5.5 Retention, Legal Holds & Cryptographic Shredding
-* **Standard Retention:** Operational call records and audio recordings are retained for 180 days (or 3 years if associated with a financial dispute, aligning with RBI circular guidelines).
-* **Legal Holds:** Records flagged with `legal_hold = true` are immune from automated purge workers.
-* **Cryptographic Shredding:** To satisfy DPDP Act erasure requests, the specific DEK associated with a customer or epoch is destroyed, rendering all historical ciphertexts permanently unrecoverable without requiring destructive database vacuuming.
+### 5.4 Realistic Memory Protection
+* Python strings are immutable and interned; claiming that clearing a Python string in memory guarantees erasure is technically invalid.
+* Phase 4 enforces realistic memory hygiene:
+  - Cryptographic keys in Python are handled strictly as mutable `bytearray` buffers and overwritten with zeros immediately after cipher instantiation.
+  - High-security key management worker processes lock pages in virtual memory using `mlock` via `ctypes` to prevent swapping keys to disk.
+  - Linux container core dumps are disabled via `prctl(PR_SET_DUMPABLE, 0)`.
+  - Master keys (KEKs) remain strictly inside the hardware security boundary (HSM/KMS) and never enter application memory.
 
 ---
 
-## 6. PostgreSQL Migration & Production Data Architecture
+## 6. PostgreSQL Production Migration & Connection Pooling
 
-### 6.1 Database Engine & Driver Selection: `psycopg` (v3)
+### 6.1 Database Engine & Driver Architecture
 * **Selected Driver:** `psycopg` (v3) with SQLAlchemy 2.0.
-* **Technical Justification:**
-  - `psycopg` v3 provides a modern, fully typed Python 3 interface with native connection pooling, binary protocol support, and high-performance `COPY` operations for bulk customer imports.
-  - Unlike `asyncpg` (which requires non-standard dialect handling and complicates mixed sync/async workers), `psycopg` v3 supports both synchronous workers and asynchronous FastAPI route handlers seamlessly.
-  - Legacy `psycopg2` is rejected due to lack of native typing and older C-extension memory architectures.
+* **Dual-Engine Architecture:**
+  1. **Asynchronous Engine (FastAPI Web Layer):** `create_async_engine("postgresql+psycopg_async://...")` manages HTTP requests and real-time WebSocket connection lifecycles without blocking event loops.
+  2. **Synchronous Engine (Background Workers):** `create_engine("postgresql+psycopg://...")` manages background campaign pacing, outbox processors, and batch data pumps.
 
-### 6.2 PgBouncer Compatibility & Pool Architecture
-To support 100+ concurrent voice connections without exhausting PostgreSQL backend processes:
+### 6.2 PgBouncer Connection Pool Allocation
+To support high concurrency without exceeding PostgreSQL backend limits:
 * **Pooling Mode:** PgBouncer in **Transaction Pooling Mode** (`pool_mode = transaction`).
-* **Prepared Statements Guard:** Because transaction pooling reallocates backend server connections between transactions, server-side prepared statements can cause collisions. SQLAlchemy is configured with:
-  ```python
-  engine = create_engine(
-      "postgresql+psycopg://...",
-      connect_args={"prepare_threshold": None},  # Disable named server-side prepared statements
-      pool_size=20,
-      max_overflow=10,
-      pool_timeout=30.0,
-      pool_recycle=1800,
-  )
-  ```
-* **Pool Sizing Calculation:**
-  $$\text{Total App Pool} = (\text{Web Workers} \times \text{Concurrency}) + (\text{Background Workers} \times \text{Threads})$$
-  $$\text{Target Backend Connections} \le \text{PostgreSQL max\_connections} \times 0.8$$
-  With 4 web workers (pool 10) + 3 background workers (pool 5), total application connections = 55, well within standard 100-connection PostgreSQL allocations.
+* **Prepared Statements Guard:** Configured with `prepare_threshold=None` in SQLAlchemy connect arguments to eliminate collision risks across transaction-pooled connections.
+* **Rigorous Pool Sizing Calculation:**
+  $$\text{Total App Pool} = (N_{\text{web}} \times \text{Pool}_{\text{web}}) + (N_{\text{worker}} \times \text{Pool}_{\text{worker}}) + \text{Admin Reserve}$$
+  - 4 Web Pods: Pool size 8 per pod, max overflow 4 $\to 4 \times 12 = 48$ max connections.
+  - 2 Worker Pods: Pool size 5 per pod, max overflow 2 $\to 2 \times 7 = 14$ max connections.
+  - Admin & Migration Reserve: 10 connections.
+  - **Total Application Connections:** $48 + 14 + 10 = 72$ connections, staying well below the PostgreSQL `max_connections = 100` ceiling ($72\% \le 80\% \text{ safety threshold}$).
 
-### 6.3 SQLite-to-PostgreSQL Migration Pipeline
-1. **Schema Deployment:** Target PostgreSQL database is initialized via Alembic (`0001_initial` $\to$ `0002_phase2_phase3_operations` $\to$ Phase 4 migrations).
-2. **Streaming Data Pump:** A dedicated migration script streams data table-by-table using binary `COPY`:
-   - Migrates `customers`, `campaigns`, `campaign_contacts`, `sessions`, `conversation_turns`, `cases`, `callbacks`, `call_records`, `agents`, `report_schedules`, `operations_audit_events`.
-   - Generates blind indexes (`phone_bidx`) and envelope-encrypts sensitive fields during migration.
-3. **Sequence & Identity Reset:** Auto-incrementing sequences are reset to `MAX(id) + 1` via `SELECT setval(...)`.
-4. **Consistency Verification:**
-   - Row-count equality across all tables.
-   - SHA-256 checksum matching on deterministic composite keys (`customer_ref`, `campaign_id`, `session_id`).
-   - Foreign key integrity verification.
-5. **Rollback Strategy:** Source SQLite database remains read-only for 7 days post-migration. If PostgreSQL fails verification, application config reverts to SQLite via single environment variable change (`DATABASE_URL`).
-
-### 6.4 Conditional Monthly Partitioning Analysis
-Partitioning adds operational complexity (e.g., foreign keys cannot reference partitioned tables without composite keys, and global unique indexes are restricted).
-* **Partitioning Decision Threshold:**
-  - **Volume < 10,000,000 rows/year:** Monthly partitioning is **NOT ENABLED**. Standard composite B-Tree indexes on `(started_at DESC, campaign_id)` and `(session_id, turn_order)` yield sub-5ms query times.
-  - **Volume $\ge$ 10,000,000 rows/year:** Conditional partitioning is activated for `conversation_turns`, `call_records`, and `operations_audit_events` using `PARTITION BY RANGE (timestamp)`.
-* **Partition Requirements if Activated:**
-  - Primary keys must include partition key: `PRIMARY KEY (call_id, started_at)`.
-  - Foreign keys from child tables must include composite references.
-  - Automated worker provisions partitions 2 months in advance.
+### 6.3 3-Stage SQLite-to-PostgreSQL Cutover Pipeline
+1. **Phase A (Pre-Cutover Preparation):** PostgreSQL schema deployed via Alembic (`0001` $\to$ `0002` $\to$ Phase 4 migrations). Outbox and encryption worker processes verified against staging fixtures.
+2. **Phase B (Maintenance Window & Read-Only Freeze):**
+   - Outbound campaigns and callbacks are paused.
+   - FastAPI server enables maintenance mode (`HTTP 503: Maintenance`).
+   - SQLite database is placed into strict read-only mode via `PRAGMA query_only = ON;`. No further SQLite writes can occur.
+   - A streaming data pump extracts data table-by-table using binary `COPY`, generates blind indexes, and envelope-encrypts sensitive fields.
+   - **Verification Suite:**
+     - 100% row-count parity across all tables.
+     - SHA-256 composite checksum matching on deterministic keys (`customer_ref`, `campaign_id`, `session_id`).
+     - Foreign key integrity verification.
+   - **Abort Path (Pre-Cutover Only):** If verification fails, SQLite is unfrozen (`query_only = OFF`), maintenance mode is disabled, and traffic resumes on SQLite with zero data loss.
+3. **Phase C (Post-Cutover Authoritative State):**
+   - If verification succeeds, application configuration switches `DATABASE_URL` to PostgreSQL, background outbox workers start, and maintenance mode is removed.
+   - **PostgreSQL is now authoritative.** SQLite is permanently retired and archived read-only.
+   - **Post-cutover rollback to SQLite is STRICTLY FORBIDDEN**, as SQLite will lack all subsequent production writes. Disaster recovery relies exclusively on PostgreSQL streaming replicas and Point-In-Time-Recovery (PITR).
 
 ---
 
@@ -298,8 +276,8 @@ Partitioning adds operational complexity (e.g., foreign keys cannot reference pa
 
 ### 7.1 Atomic Outbox Mutation
 To prevent dual-write inconsistencies (where a database update succeeds but an external event or background job is lost):
-1. Any domain state transition (e.g., customer callback requested, campaign contact dispositioned) is executed in a SQL transaction.
-2. In the **exact same SQL transaction**, an outbox record is inserted into the `outbox` table:
+1. Every domain mutation (e.g., callback marked due, contact dispositioned) is executed in a SQL transaction.
+2. In the **exact same SQL transaction**, an outbox record is inserted into `outbox`:
    ```python
    with db.session() as s:
        contact.status = "COMPLETED"
@@ -307,53 +285,53 @@ To prevent dual-write inconsistencies (where a database update succeeds but an e
            outbox_id=f"OUT-{uuid4().hex[:12].upper()}",
            event_topic="campaign_contact.completed",
            payload={"contact_id": contact.contact_id, "disposition": "CLOSED"},
+           idempotency_key=f"IDEMP-CONTACT-{contact.contact_id}-COMPLETED",
            status="PENDING",
            created_at=utcnow(),
        ))
-       s.commit()  # Both domain update and event commit atomically
+       s.commit()  # Domain update and outbox event commit atomically
    ```
 
 ### 7.2 Worker Claiming, Leases & Crash Recovery
-* **PostgreSQL Worker Claiming Query:**
-  Workers claim batches using pessimistic locking and skip-locked concurrency:
+* **Pessimistic Locking Query:**
   ```sql
-  SELECT outbox_id, event_topic, payload
+  SELECT outbox_id, event_topic, payload, idempotency_key, attempts
   FROM outbox
-  WHERE status = 'PENDING'
+  WHERE status IN ('PENDING', 'FAILED_RETRY')
     AND (locked_until IS NULL OR locked_until < NOW())
   ORDER BY created_at ASC
   LIMIT 10
   FOR UPDATE SKIP LOCKED;
   ```
-* **Lease Duration:** When claimed, the worker sets `status = 'PROCESSING'`, `locked_until = NOW() + INTERVAL '30 seconds'`, and `worker_id = :worker_id`.
-* **Crash Recovery:** If a worker process terminates abruptly mid-task, its lease expires (`locked_until < NOW()`). On the next polling cycle, a surviving worker automatically re-claims the event.
-* **At-Least-Once Delivery & Deduplication:**
-  All outbox events carry an immutable `outbox_id` and domain `idempotency_key`. Consumers verify if `outbox_id` has already been processed before executing side effects.
-* **Dead-Letter Queue:** Events failing after 5 attempts are marked `status = 'DEAD_LETTER'`, alerting operations without blocking worker queues.
+* **Lease Duration:** The claiming worker sets `status = 'PROCESSING'`, `locked_until = NOW() + INTERVAL '30 seconds'`, and `worker_id = :worker_id`.
+* **Crash Recovery:** If a worker terminates abruptly, its lease expires (`locked_until < NOW()`). On the next polling cycle, a surviving worker automatically re-claims the event.
 
-### 7.3 Ephemeral UI Event Bus vs Durable Outbox
-* **Clarification:** The existing in-process `event_bus.py` is strictly an ephemeral in-memory pub/sub for updating the browser dashboard via WebSockets (`/events/ws`). **It is not durable storage.**
-* **Architectural Separation:** Durable operational workflows (retrying failed calls, pacing outbound queues, triggering webhook notifications) are driven exclusively by the database-backed `outbox` table and persistent worker polling, never by the ephemeral UI event bus.
-
-### 7.4 Race-Free State Machines for Campaign & Callback Workers
-* **Campaign Dialing State Machine:**
-  $$\text{PENDING} \xrightarrow{\text{Pacing Claim}} \text{QUEUED} \xrightarrow{\text{Pre-Dispatch Check}} \text{RINGING} \xrightarrow{\text{Outcome}} \begin{cases} \text{COMPLETED} \\ \text{RETRY\_SCHEDULED} \\ \text{FAILED} \\ \text{DND\_EXCLUDED} \end{cases}$$
-  To prevent concurrent worker collisions, state transitions use atomic conditional updates:
-  ```sql
-  UPDATE campaign_contacts
-  SET status = 'QUEUED', updated_at = NOW()
-  WHERE contact_id = :cid AND status IN ('PENDING', 'RETRY_SCHEDULED')
-  RETURNING contact_id;
-  ```
-* **Simulation Boundaries Preserved:** Campaign workers simulate call progress using randomized outcome matrices and timer intervals. No PSTN / SIP telephony is introduced in Phase 4.
+### 7.3 At-Least-Once Delivery vs. Exactly-Once Side Effects
+* Outbox delivery is physically **at-least-once**.
+* To guarantee **exactly-once business side effects**, all downstream operations are idempotent:
+  - Downstream external APIs (telephony simulation, webhook dispatch) receive an immutable `Idempotency-Key: <idempotency_key>`.
+  - Internal database mutations execute conditional transitions (`UPDATE ... WHERE status = 'EXPECTED'`).
+  - Consumers verify the idempotency key and return cached results for duplicate dispatches without re-executing.
+* **Dead-Letter Queue:** Events failing 5 consecutive attempts transition to `status = 'DEAD_LETTER'` with full exception preservation, unblocking queues and alerting on-call engineers.
 
 ---
 
-## 8. Configurable India Calling Policy & Customer Preferences
+## 8. Configurable India Calling Policy & Regulatory Compliance
 
-### 8.1 Configurable Compliance Engine Architecture
-The hardcoded 09:00–20:00 rule from previous phases is replaced with a versioned, configurable rules engine aligning with the **Telecom Commercial Communications Customer Preference Regulations (TCCCPR, 2018)** and Town Bank compliance directives.
+### 8.1 Applicable Regulatory Framework
+The policy engine is designed to align with the **Telecom Commercial Communications Customer Preference Regulations (TCCCPR, 2018)**, read alongside subsequent TRAI Directions, Tariff Orders, and 2021–2024 Amendments, including:
+- Mandatory entity, header, and content template registration on Distributed Ledger Technology (DLT) portals.
+- 140-series dialing allocations for promotional communications.
+- Digital Consent Acquisition (DCA) framework and national Scrubbing System integration.
+- Strict anti-harassment frequency caps and velocity limits.
 
+### 8.2 Calling Windows & Campaign Classification
+* **Important Compliance Clarification:** Calling windows and campaign classifications are **UNAPPROVED CONFIGURATION PLACEHOLDERS** until explicitly certified and signed off in writing by Town Bank Legal & Compliance:
+  - Default Promotional Template (Unapproved): Strict 09:00 – 20:00 IST.
+  - Default Service/Transactional Template (Unapproved): 08:00 – 21:00 IST (or scheduled callback).
+* All time checks execute strictly in Indian Standard Time (IST, UTC+05:30).
+
+### 8.3 Two-Stage Fail-Closed Enforcement
 ```
 [ OUTBOUND CALL REQUEST ]
             │
@@ -366,11 +344,10 @@ The hardcoded 09:00–20:00 rule from previous phases is replaced with a version
 │     └── Commercial / Promotional / Adoption            │
 │                                                        │
 │  2. Evaluate Allowed Calling Window (IST)              │
-│     ├── Service: 08:00 – 21:00 (or scheduled callback) │
-│     └── Promotional: Strict 09:00 – 20:00              │
+│     └── Validates against certified bank hours         │
 │                                                        │
 │  3. Real-Time DND Scrub against Registry               │
-│     └── Global Bank DND + Telecom Category Scrub       │
+│     └── Bank DND + Telecom Category Scrub              │
 │                                                        │
 │  4. Frequency Capping & Velocity Limits                │
 │     └── Max 3 attempts/week, Min 24h gap               │
@@ -378,18 +355,14 @@ The hardcoded 09:00–20:00 rule from previous phases is replaced with a version
             │
             ├── APPROVED ──► Proceed to Dispatch
             │
-            └── REJECTED / UNKNOWN ──► Mark DND_EXCLUDED (Fail-Closed)
+            └── REJECTED / UNRESOLVED ──► Mark DND_EXCLUDED (Fail-Closed)
 ```
 
-### 8.2 Two-Stage Enforcement: Enrollment & Pre-Dispatch
-1. **Enrollment Scrub:** Executed when contacts are uploaded or enrolled into a campaign. Matches against the national/bank DND registry.
-2. **Pre-Dispatch Real-Time Scrub:** Executed immediately before the dialing worker initiates an outbound call (seconds prior to connection). If a customer updated their preference between enrollment and dispatch, the call is blocked immediately.
-
-### 8.3 Fail-Closed Policy & Audit Evidence
-* **Fail-Closed Principle:** If the DND status or customer preference cannot be conclusively determined (e.g., database timeout, unresolvable phone format), the policy engine **fails closed**—the contact is marked `DND_UNKNOWN_BLOCKED` and excluded from dialing.
-* **Audit Evidence:** Every dispatch evaluation logs an immutable record with:
-  `policy_version`, `campaign_category`, `customer_tz`, `evaluated_at_utc`, `decision` (`ALLOWED` / `BLOCKED`), `reason`.
-* **Production Gate:** Compliance sign-off by Town Bank legal/compliance officers is a mandatory deployment gate prior to production traffic.
+1. **Stage 1 (Enrollment Scrub):** Executed when contacts are uploaded or campaigns generated.
+2. **Stage 2 (Pre-Dispatch Real-Time Scrub):** Executed milliseconds before the dialing worker triggers a call. If a customer registered on DND or revoked consent between enrollment and dispatch, the call is blocked immediately.
+3. **Fail-Closed Principle:** If DND status, customer preference, or telecom registry connectivity cannot be conclusively verified (e.g. timeout, unresolvable number), the engine **fails closed**—the call is marked `DND_UNKNOWN_BLOCKED` and excluded from dialing.
+4. **Opt-Out Precedence:** An explicit customer opt-out during a live call immediately overrides all prior consents and updates the bank's internal suppression registry in real time.
+5. **Telephony Reality:** Application logic alone does NOT establish TRAI compliance. Full legal compliance requires carrier-level 140-series CLI provisioning and Access Provider DLT integration.
 
 ---
 
@@ -422,64 +395,52 @@ T8: Database Persistence Completed (Turns, Outbox, Audit) ◄── [ FULL TURN 
 ```
 
 ### 9.2 Prometheus Metrics Exporter (`/metrics`)
-Exported in standard OpenMetrics format:
-* `kural_turn_latency_first_audio_ms` (Histogram with buckets: 300, 600, 900, 1200, 1500, 1800, 2500)
-* `kural_turn_latency_full_ms` (Histogram with buckets: 500, 1000, 1500, 2000, 2500, 3500)
+* `kural_turn_latency_first_audio_ms` (Histogram buckets: 300, 600, 900, 1200, 1500, 1800, 2500)
+* `kural_turn_latency_full_ms` (Histogram buckets: 500, 1000, 1500, 2000, 2500, 3500)
 * `kural_active_voice_sessions` (Gauge)
-* `kural_barge_in_events_total` (Counter)
-* `kural_policy_violations_total` (Counter)
 * `kural_outbox_lag_seconds` (Gauge measuring oldest unprocessed event)
+* `kural_dnd_blocks_total` (Counter)
 
 ### 9.3 Empirical Load Test Specifications
-All load test claims are explicitly categorized as **TARGETS** until validated on production-grade infrastructure:
-
-* **Target SLOs:**
-  - 100 concurrent bidirectional voice sessions per node.
-  - $P_{50}$ Time-to-First-Audio $< 1,200 \text{ ms}$; $P_{95} < 1,800 \text{ ms}$.
-  - System availability target: 99.95% uptime.
-* **Test Harness Environment:**
-  - Standard Benchmark Node: 8 vCPU, 16 GB RAM, Linux kernel 6.x, 1 Gbps networking.
-  - Database: Dedicated PostgreSQL 16 instance with SSD storage (minimum 3,000 IOPS).
-* **Load Test Scenarios (k6):**
-  1. **Warm-Up Test:** 10 concurrent calls ramping over 2 minutes. Verifies connection pools and TTS WebSocket pre-warming.
-  2. **Sustained Concurrency Test:** 100 concurrent active sessions running multi-turn scripts for 30 minutes. Measures memory stability, CPU utilization, and $P_{95}$ latency.
-  3. **Spike Test:** Sudden ramp from 10 to 150 concurrent sessions over 30 seconds. Verifies rate limiters, backpressure, and recovery without process crashes.
-  4. **Soak Test:** 50 concurrent sessions sustained for 4 hours. Validates zero memory leaks and stable garbage collection.
-  5. **Worker Failure Injection:** Abrupt SIGKILL sent to background workers during high outbox load. Verifies lease expiration and zero duplicate dispatching.
-* **Mocked vs Live Integration Distinction:**
-  - *Tier 1 (Internal Architecture Benchmark):* Executed using high-fidelity mocked Sarvam/LLM providers. Measures pure KURAL FSM, PostgreSQL, outbox, and WebSocket server capacity.
-  - *Tier 2 (End-to-End Live Provider Benchmark):* Executed against real external Sarvam and Groq/Gemini APIs under provider rate limits (typically 10-20 concurrent calls depending on API quota).
+All concurrency claims are categorized as **TARGETS** until empirically validated on production infrastructure:
+* **Target SLO:** 100 concurrent bidirectional voice sessions per node at $P_{95}$ Time-to-First-Audio $< 1,800\text{ ms}$.
+* **Tier 1 (Internal Architecture Benchmark):** High-fidelity mocked STT/TTS/LLM providers measuring pure KURAL FSM, PostgreSQL, outbox, and WebSocket server capacity.
+* **Tier 2 (End-to-End Live Provider Benchmark):** Real external APIs under live provider quota limits (10–20 concurrent calls).
 
 ---
 
 ## 10. Security, Incident Response & Tamper-Evident Ledger
 
 ### 10.1 Cryptographic Tamper-Evident Audit Ledger
-* **Monotonic Sequence & Hash Chaining:**
-  Each record in `operations_audit_events` contains an immutable SHA-256 hash chaining link:
+* **Monotonic Sequence & HMAC Hash Chaining:**
+  Each record in `operations_audit_events` contains an immutable hash chaining link:
   $$\text{Hash}_n = \text{HMAC-SHA256}\Big(\text{AuditKey},\; \text{Hash}_{n-1} \parallel \text{Seq}_n \parallel \text{Timestamp}_n \parallel \text{Actor}_n \parallel \text{Action}_n \parallel \text{Resource}_n \parallel \text{Detail}_n\Big)$$
-* **Database Privilege Hardening:**
-  The runtime application user (`ava_app`) is granted strictly:
-  ```sql
-  GRANT SELECT, INSERT ON operations_audit_events TO ava_app;
-  REVOKE UPDATE, DELETE, TRUNCATE ON operations_audit_events FROM ava_app, PUBLIC;
-  ```
-  Database-level triggers raise unconditional exceptions on any `UPDATE` or `DELETE` attempt.
-* **External Sealing:** Every 24 hours, the latest sequence hash is digitally signed and pushed to an external Write-Once-Read-Many (WORM) storage bucket or immutable cloud log, preventing retroactive manipulation even by database administrators.
-
-### 10.2 Incident Response Playbooks
-
-| Incident Scenario | Detection Signal | Immediate Automated Action | Operational Resolution Procedure |
-| :--- | :--- | :--- | :--- |
-| **KMS Key Compromise** | Alert from Cloud KMS / Security Operations Center. | Freeze key access; switch to standby key version in configuration. | Re-encrypt DEKs using new KEK; revoke compromised key version; audit all decrypt events. |
-| **Database Compromise** | Unauthorized connection or anomalous query patterns. | Revoke compromised database credentials; sever connection pool. | Failover to isolated replica; verify audit ledger hash integrity; restore from encrypted point-in-time backup. |
-| **Outbox Queue Backlog** | `kural_outbox_lag_seconds` exceeds 60 seconds. | Alert on-call engineers; auto-scale worker concurrency. | Inspect dead-letter queue; check for slow external dependencies; adjust pacing limits. |
-| **External AI Provider Outage**| Consecutive Sarvam or LLM timeouts ($> 3$ failures). | Immediate automated fallback to local deterministic KURAL rules. | Switch to secondary provider candidate (e.g., Qwen $\to$ GPT-OSS $\to$ Gemini) or alert caller that speech service is degraded. |
-| **Unauthorized Audio Access** | Rapid spike in `/api/recordings/{id}` 403s. | IP rate limiter blocks source address for 60 minutes. | Security team reviews audit logs; verify encryption key access logs; invalidate active sessions. |
+* **Concurrent Sequencing Architecture:**
+  To prevent transaction serialization bottlenecks on audit insertion, sequence generation uses a dedicated PostgreSQL sequence paired with row-level locks on a singleton `audit_head` record, ensuring strict monotonic sequencing without table-level locking.
+* **Verification & Tamper Detection:**
+  An automated verification worker walks the chain checking that:
+  1. $\text{Seq}_n == \text{Seq}_{n-1} + 1$ (detects deleted or dropped audit events).
+  2. $\text{Hash}_n == \text{HMAC}(\text{AuditKey}, \dots)$ (detects modified record content).
+  Any gap or mismatch raises an immediate high-priority compliance alert.
+* **External Sealing:** Every 24 hours, the latest sequence hash is digitally signed and exported to Write-Once-Read-Many (WORM) storage (AWS S3 Object Lock / cloud immutable storage).
 
 ---
 
-## 11. Revised Milestones & Definitions of Done
+## 11. Revised Secure Rollback & Recovery Procedures by Milestone
+
+**Core Invariant:** All production rollback paths that disable authentication, allow plaintext writes, revert to permissive calling, or fall back to stale SQLite databases are **PERMANENTLY REMOVED**. Every failure fails closed, preserves forensic evidence, and requires controlled operator recovery.
+
+| Milestone | Rollback / Failure Trigger | Secure Technical Recovery Procedure |
+| :--- | :--- | :--- |
+| **M4.1 (RBAC/Auth)** | Authentication defect blocks valid operator access or voice connections. | **STRICT FAIL-CLOSED:** Never disable authentication or open routes.<br>1. Utilize offline break-glass administrator account (`python -m kural.cli init-admin`) with physical console access.<br>2. Roll forward via atomic bugfix or roll back application container to previous authenticated release binary after confirming token table compatibility.<br>3. If token validation is broken, return HTTP 401/403 and WebSocket 1008, preserve audit logs, and require operator intervention. |
+| **M4.2 (Encryption/PII)** | KMS key unwrap failure, DEK mismatch, or ciphertext corruption. | **STRICT FAIL-CLOSED:** Never fall back to writing plaintext PII or unencrypted audio.<br>1. Write operations abort immediately with transaction rollback.<br>2. Trigger automated failover to standby KEK / KMS endpoint.<br>3. If unrecoverable, halt affected ingestion workers, preserve raw ciphertexts and KMS transaction IDs for forensic analysis, and alert SecOps on-call. |
+| **M4.3 (PostgreSQL/Outbox)** | Database connection loss or outbox worker stall post-cutover. | **NO SQLITE ROLLBACK:** SQLite is permanently retired post-cutover.<br>1. Failover to PostgreSQL hot-standby streaming replica.<br>2. Outbox worker stalls recover automatically as lease timeouts (`locked_until < NOW()`) expire.<br>3. Persistent poison-pill messages are routed to `DEAD_LETTER` with payload preservation, alerting on-call without blocking queues. |
+| **M4.4 (Policy/Audit)** | Compliance policy misconfiguration blocks valid service callbacks, or audit chain breaks. | **STRICT FAIL-CLOSED:** Never widen calling windows or permit dialing on error.<br>1. Revert policy configuration ONLY to a previously certified, compliance-signed policy version (e.g. `policy_v1.0.yaml`), never to an unvetted permissive default.<br>2. If audit chain verification fails, freeze affected operator accounts, export current chain state for compliance review, and alert CISO. |
+| **M4.5 (Telemetry/Scale)** | High-concurrency load induces memory pressure or connection exhaustion. | **CONTROLLED THROTTLING:** Reverting blindly to commit `59edf51` is prohibited due to schema incompatibility.<br>1. Apply operational throttling: scale down worker concurrency, reduce PgBouncer max pool, and disable non-essential OpenTelemetry trace exporters.<br>2. Scale application container pods horizontally.<br>3. Code rollbacks require deploying a container that matches the active database schema and encryption version. |
+
+---
+
+## 12. Revised Milestones & Concrete Acceptance Tests
 
 ```
 [ M4.1: RBAC & Auth ] ──► [ M4.2: Data Security & PII ] ──► [ M4.3: PostgreSQL & Outbox ]
@@ -488,94 +449,72 @@ All load test claims are explicitly categorized as **TARGETS** until validated o
 ```
 
 ### Milestone 4.1: Authentication, Authorization & RBAC
-* **Dependencies:** None.
-* **Definition of Done:**
-  - [ ] Asymmetric RS256 JWT access tokens and secure `HttpOnly` refresh token cookies implemented.
-  - [ ] Refresh token rotation and reuse detection with family revocation verified.
-  - [ ] 5 operational roles (`ANALYST`, `AGENT`, `SUPERVISOR`, `COMPLIANCE_OFFICER`, `SYSTEM_ADMIN`) mapped and enforced via FastAPI dependencies.
-  - [ ] Single-use 30s WebSocket ticket issued via authenticated REST API and burned on connection.
-  - [ ] Automated tests prove unauthorized access, role escalation, and expired token rejection.
+* **Concrete Acceptance Tests:**
+  1. `test_cookie_host_prefix_compliance`: Verifies `Set-Cookie` header includes `__Host-` prefix, `Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`, and NO `Domain`.
+  2. `test_refresh_token_concurrent_grace_window`: Verifies concurrent refresh requests within 15 seconds succeed without triggering reuse alerts.
+  3. `test_refresh_token_family_reuse_revocation`: Verifies presenting a revoked refresh token after 15 seconds immediately invalidates the entire token family and terminates sessions.
+  4. `test_access_jwt_immediate_revocation`: Verifies that incrementing `user.token_version` immediately causes active access JWTs to be rejected with HTTP 401.
+  5. `test_system_admin_pii_access_blocked`: Verifies `SYSTEM_ADMIN` role receives HTTP 403 on `/api/calls/{id}`, `/api/recordings/{id}`, and customer tables.
+  6. `test_single_use_websocket_ticket_burn`: Verifies that connecting twice with the same ticket fails on the second attempt with WebSocket code 1008.
 
 ### Milestone 4.2: Data Protection, Cryptography & PII
-* **Dependencies:** M4.1.
-* **Definition of Done:**
-  - [ ] AES-256-GCM envelope encryption implemented with table/record AAD context.
-  - [ ] Keyed blind indexes (`HMAC-SHA256`) implemented for searchability on phone/email.
-  - [ ] 64KB chunk-level streaming encryption implemented for audio recordings.
-  - [ ] Dynamic PII tokenizer sanitizes credentials before logging, LLM dispatch, or export.
-  - [ ] Audited compliance unmasking endpoint operational with mandatory written justification.
+* **Concrete Acceptance Tests:**
+  1. `test_envelope_encryption_aad_tamper_rejection`: Verifies modifying the AAD context (`customer_ref`) causes AES-GCM tag verification failure.
+  2. `test_per_recording_dek_cryptographic_shredding`: Verifies destroying a recording's DEK renders its audio unrecoverable while all other recordings remain decryptable.
+  3. `test_recording_manifest_truncation_detection`: Verifies stripping trailing 64KB audio chunks is detected by manifest validation, raising `RECORDING_TRUNCATED_TAMPERED`.
+  4. `test_plaintext_write_rejection`: Verifies repository layer rejects any write operation without `enc:v1:` envelope in production mode.
+  5. `test_blind_index_deterministic_search`: Verifies exact-match customer lookup via HMAC blind index matches plaintext without full-table decryption.
 
 ### Milestone 4.3: PostgreSQL Migration & Durable Outbox
-* **Dependencies:** M4.2.
-* **Definition of Done:**
-  - [ ] `psycopg` (v3) engine and PgBouncer transaction-pooling configuration implemented.
-  - [ ] SQLite-to-PostgreSQL data pump script verified with row-count and checksum parity.
-  - [ ] Transactional outbox worker operational using `SELECT ... FOR UPDATE SKIP LOCKED`.
-  - [ ] Worker crash recovery verified via simulated lease expiration tests.
-  - [ ] Zero duplicate dispatches verified under concurrent worker execution.
+* **Concrete Acceptance Tests:**
+  1. `test_sqlite_cutover_consistency`: Verifies 100% row-count parity and composite SHA-256 hash matching during data pump migration.
+  2. `test_outbox_atomic_commit`: Verifies domain state mutation and outbox event commit in the exact same transaction; simulating a rollback leaves neither.
+  3. `test_outbox_worker_crash_recovery`: Verifies an uncompleted outbox lease is safely claimed and processed by a surviving worker after lease expiry.
+  4. `test_at_least_once_idempotent_dispatch`: Verifies that re-dispatching an outbox event with the same `idempotency_key` produces zero duplicate side effects.
+  5. `test_connection_pool_bounds_under_load`: Verifies total application connection usage stays within the 72-connection allocation under maximum concurrency.
 
 ### Milestone 4.4: Compliance Policy Engine & Tamper-Evident Ledger
-* **Dependencies:** M4.3.
-* **Definition of Done:**
-  - [ ] Configurable TCCCPR 2018 calling policy engine replaces hardcoded hours.
-  - [ ] Pre-dispatch real-time DND scrub and fail-closed validation verified.
-  - [ ] Monotonic HMAC-SHA256 hash chaining active on `operations_audit_events`.
-  - [ ] Audit verification script detects intentional row tampering with 100% accuracy.
-  - [ ] OpenMetrics Prometheus `/metrics` exporter tracking $T_0 \to T_8$ milestones.
+* **Concrete Acceptance Tests:**
+  1. `test_pre_dispatch_dnd_fail_closed`: Verifies that a simulated telecom DND registry timeout blocks outbound dialing immediately.
+  2. `test_opt_out_realtime_precedence`: Verifies customer opt-out during a call instantly overrides campaign enrollment.
+  3. `test_audit_hash_chain_gap_detection`: Verifies deleting or modifying an audit row causes the chain verification utility to pinpoint the exact tampered sequence index.
+  4. `test_metrics_t0_to_t8_telemetry`: Verifies Prometheus `/metrics` correctly differentiates between Time-to-First-Audio ($T_6$) and Full Turn Completion ($T_8$).
 
-### Milestone 4.5: Empirical Load Testing & CI/CD Security Gates
-* **Dependencies:** M4.4.
-* **Definition of Done:**
-  - [ ] k6 load test scripts written for warm-up, sustained (100 concurrent target), spike, and soak.
-  - [ ] Benchmark executed and accurately labeled (mocked vs live provider).
-  - [ ] Static typing (`mypy --strict`), AST security scan (`bandit`), and dependency audit clean.
-  - [ ] Full regression suite passing with zero regressions across Phase 1, Phase 2, and Phase 3.
+### Milestone 4.5: Empirical Load Testing & Production Security Gates
+* **Concrete Acceptance Tests:**
+  1. `test_mypy_strict_clean`: Verifies zero static typing errors across all backend modules.
+  2. `test_bandit_ast_security_clean`: Verifies zero high/medium security vulnerabilities detected via AST analysis.
+  3. `test_k6_sustained_concurrency_slo`: Executes Tier 1 benchmark verifying 100 concurrent sessions maintain $P_{95}$ Time-to-First-Audio $< 1,800\text{ ms}$.
+  4. `test_phase1_to_phase3_full_regression`: Verifies 100% of Phase 1–3 regression tests (173/173) pass cleanly.
 
 ---
 
-## 12. Decision Log
+## 13. Decision Log
 
-### 12.1 Mandatory Decisions (Non-Negotiable)
-1. **FSM Supremacy:** KURAL FSM remains the sole business and state authority. The LLM cannot write to the database or trigger unvetted actions.
-2. **Deterministic Token Burn:** Voice WebSocket tickets are single-use, 30-second TTL, and burned atomically on handshake.
-3. **No Unencrypted PII at Rest:** All direct PII in database and disk audio must be envelope-encrypted with AES-256-GCM and AAD.
-4. **Fail-Closed DND:** Outbound calls are blocked if preference/DND status cannot be verified.
-5. **No Telephony in Phase 4:** PSTN/SIP integration remains strictly deferred to Phase 5.
+### 13.1 Non-Negotiable Invariants
+1. **FSM Supremacy:** KURAL FSM is the sole authority for state, policy, and spoken turns. LLMs are confined strictly to intent and entity classification.
+2. **Fail-Closed Everything:** Security, authentication, encryption, and calling policy fail closed. Unsafe rollbacks (plaintext fallbacks, unauthenticated access) are permanently prohibited.
+3. **No Unencrypted PII at Rest:** All PII in database and disk audio must be envelope-encrypted with AES-256-GCM and context AAD.
+4. **Strict Post-Cutover Single Authority:** PostgreSQL is the sole authoritative store post-cutover. Reverting to SQLite is strictly forbidden.
+5. **No Production Telephony in Phase 4:** Carrier SIP/PSTN trunking remains strictly deferred to Phase 5.
 
-### 12.2 Architectural Recommendations
-1. **Driver:** Standardize on `psycopg` v3 for all PostgreSQL operations to avoid dialect fragmentation.
-2. **Partitioning:** Defer table partitioning until annual volume exceeds 10M rows to avoid composite key complexity.
-3. **Blind Indexing:** Use HMAC-SHA256 with an isolated KMS key for exact-match customer search.
-
-### 12.3 Explicit Assumptions
-1. **Deployment Platform:** Production environment will provide Linux container orchestration (Kubernetes / Docker) with Cloud KMS or Vault integration.
-2. **Network Perimeter:** Production deployment will include a TLS 1.3 terminating reverse proxy (Nginx / Cloud Load Balancer) handling initial DDoS filtering.
-3. **Provider Quotas:** Live provider testing is bounded by Sarvam and Groq API rate limits; 100 concurrent session targets will be benchmarked using mock provider harnesses.
-
-### 12.4 Deferred Work (Strictly Phase 5)
-1. Real PSTN / SIP trunking and telephony carrier integration.
-2. Dual-channel telephonic audio mixing (telephony carrier audio fork).
-3. Live carrier-grade speech packet jitter buffers.
+### 13.2 Architectural Decisions Changed in v1.0.2
+* **Decision 1 (Rollbacks):** Removed all unsafe rollback modes (`REQUIRE_AUTH=false`, plaintext PII writes, permissive calling policy, SQLite fallback post-cutover, blind git checkouts). Replaced with fail-closed procedures, break-glass admin, and schema-compatible roll-forwards.
+* **Decision 2 (Voice Boundary):** Documented raw audio containing credentials prior to STT. Formally defined Option A (bank-controlled boundary) as the only compliant model, with Option B (external SaaS) restricted to synthetic testing pending bank CISO approval.
+* **Decision 3 (Cookies & Sessions):** Corrected `__Host-` cookie configuration to `Path=/` with no `Domain`. Added 15-second grace window for concurrent refreshes and immediate JWT revocation via `token_version`.
+* **Decision 4 (Cryptography):** Selected per-recording DEKs for cryptographic shredding. Added authenticated recording-completion manifests to detect chunk truncation. Documented realistic Python memory guarantees.
+* **Decision 5 (Cutover & Outbox):** Defined 3-phase maintenance freeze for SQLite cutover. Distinguished at-least-once outbox delivery from exactly-once side effects via idempotency keys. Unified `psycopg` v3 async and sync engines with 72-connection pool limits.
+* **Decision 6 (RBAC & Audit):** Replaced hierarchical inheritance with explicit permission matrix strictly separating `SYSTEM_ADMIN` from customer data. Added mandatory MFA for privileged roles and non-blocking monotonic audit sequencing.
+* **Decision 7 (Regulatory):** Referenced comprehensive TCCCPR framework and subsequent amendments. Marked calling hours as unapproved placeholders requiring bank legal sign-off. Emphasized carrier DLT integration requirements.
 
 ---
 
-## 13. Rollback Strategy by Milestone
+## 14. Outstanding Decisions Requiring Bank / Governance Approval
 
-| Milestone | Rollback Trigger | Technical Rollback Procedure |
-| :--- | :--- | :--- |
-| **M4.1 (RBAC/Auth)** | Authentication regressions block valid dashboard operations or voice connections. | Set `REQUIRE_AUTH=false` in environment configuration to restore permissive Phase 3 mode; revert API dependency decorators. |
-| **M4.2 (Encryption/PII)**| Decryption failure or corrupted ciphertext prevents record loading. | Read unencrypted fallback supported by `enc:v1:` prefix check; restore DEK from KMS key history; revert to plaintext write mode if needed. |
-| **M4.3 (PostgreSQL/Outbox)**| Database connectivity failures or PgBouncer pool exhaustion. | Revert `DATABASE_URL` environment variable to source SQLite file (`kural_local.db`); stop PostgreSQL worker process. |
-| **M4.4 (Policy/Audit)** | Compliance policy incorrectly blocks valid customer service callbacks. | Revert active policy configuration YAML to default permissive service window; outbox processes resume. |
-| **M4.5 (Telemetry/Scale)**| Load testing uncovers memory leak or deadlock under load. | Scale down worker concurrency to 1; disable non-essential OpenTelemetry trace exporters; revert to commit `59edf51`. |
+The following items are formal governance gates that require written sign-off by Town Bank authorities prior to initiating production deployment:
 
----
-
-## 14. Production Risks Requiring Bank / Compliance Sign-Off
-
-The following items are technical specifications that require explicit review and sign-off by Town Bank governance authorities prior to production deployment:
-
-1. **TRAI Campaign Classification Sign-Off:** Written confirmation from bank compliance regarding whether app-adoption campaigns are categorized as "Service/Informational" (08:00–21:00) or "Commercial/Promotional" (strict 09:00–20:00).
-2. **KMS Key Custody Agreement:** Agreement on whether master encryption keys (KEKs) reside in Town Bank's internal HSM, Google Cloud KMS, or AWS KMS.
-3. **Audit Retention & Legal Hold Policy:** Sign-off on the 180-day standard purge window versus the 3-year financial dispute hold requirement.
-4. **External AI Data Processing Addendum:** Formal regulatory clearance confirming that transmitting sanitized, credential-scrubbed conversational transcripts to Sarvam AI and Groq complies with bank data localization rules.
+1. **Voice-Provider STT Processing Model:** Written approval from Bank CISO selecting between on-premises container deployment (Option A) or formal cloud SaaS exception (Option B with zero-retention DPA).
+2. **TRAI Calling Windows & Campaign Categories:** Formal written sign-off by Bank Legal & Compliance on operational calling hours and campaign classifications (Service vs Promotional).
+3. **KMS Key Custody Agreement:** Written agreement on whether master encryption keys (KEKs) reside in Town Bank's internal HSM, Google Cloud KMS, or AWS KMS.
+4. **Audit Retention & Purge Policy:** Sign-off on the 180-day standard retention window versus the 3-year financial dispute hold requirement.
+5. **Telephony Carrier & DLT Registration:** Selection of licensed Access Provider for 140-series CLI allocation and enterprise DLT portal registration.
