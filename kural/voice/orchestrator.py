@@ -108,6 +108,7 @@ class RealtimeVoiceOrchestrator:
         self._last_processed_transcript = ""
         self._last_processed_at = 0.0
         self._pcm_buffer: bytearray = bytearray()
+        self._mic_frames_received = 0
 
     async def _send_json(self, payload: dict[str, Any]) -> None:
         async with self._send_lock:
@@ -137,9 +138,10 @@ class RealtimeVoiceOrchestrator:
                 self.engine.begin_live_call(session_id)
             call_started = time.perf_counter()
 
-            prewarm = getattr(self.tts, "prewarm", None)
-            if callable(prewarm):
-                asyncio.create_task(prewarm())
+            if resume:
+                prewarm = getattr(self.tts, "prewarm", None)
+                if callable(prewarm):
+                    asyncio.create_task(prewarm())
 
             await self._send_json({"type": "connected", "session_id": session_id})
             if not resume:
@@ -200,9 +202,16 @@ class RealtimeVoiceOrchestrator:
                     await self._send_json({"type": "voice_error", "detail": "Invalid microphone audio frame."})
                     continue
                 self._pcm_buffer.extend(pcm)
+                self._mic_frames_received += 1
                 if self._first_pcm_at is None:
                     self._first_pcm_at = time.perf_counter()
                     await self._timing("mic_audio_start", call_started, log=True)
+                if self._mic_frames_received % 100 == 0:
+                    await self._send_json({
+                        "type": "audio_diagnostics",
+                        "mic_frames": self._mic_frames_received,
+                        "bytes": len(self._pcm_buffer),
+                    })
                 await self.stt.send_audio(pcm)
                 continue
             text = message.get("text")
@@ -225,6 +234,15 @@ class RealtimeVoiceOrchestrator:
                     elif status == "idle":
                         self._is_client_playing = False
                         self._last_assistant_speech_ended_at = time.perf_counter()
+                    continue
+                if kind == "retry_speech":
+                    last_utt = self._recent_assistant_utterances[-1] if self._recent_assistant_utterances else KuralEngine.opening_message()
+                    if self._tts_task is not None and not self._tts_task.done():
+                        self._tts_task.cancel()
+                        await asyncio.gather(self._tts_task, return_exceptions=True)
+                    self._tts_task = asyncio.create_task(
+                        self._start_speech(last_utt, call_started, ended=False, is_opening=True)
+                    )
                     continue
                 if kind == "user_text":
                     user_utterance = str(control.get("text", "")).strip()
@@ -483,7 +501,11 @@ class RealtimeVoiceOrchestrator:
                 raise
             except Exception as error:
                 logger.warning("Realtime TTS failed session=%s error_type=%s", self._session_id, type(error).__name__)
-                await self._send_json({"type": "tts_error", "detail": "Voice playback is unavailable right now. The text response is still available."})
+                await self._send_json({
+                    "type": "tts_error",
+                    "detail": "Voice playback is unavailable right now. You can retry voice playback or use typed responses.",
+                    "recoverable": True,
+                })
             await self._timing("final_audio", tts_started, log=True)
             elapsed_full_turn_ms = (time.perf_counter() - call_started) * 1000.0
             metrics_registry.turn_latency_full_ms.observe(elapsed_full_turn_ms)

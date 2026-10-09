@@ -140,6 +140,10 @@ export function TestConsolePage() {
   const [turnTelemetry, setTurnTelemetry] = useState<TurnTelemetry | null>(null);
   const [telemetryHistory, setTelemetryHistory] = useState<TurnTelemetry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [voiceErrorRecoverable, setVoiceErrorRecoverable] = useState(false);
+  const [micFramesTransmitted, setMicFramesTransmitted] = useState(0);
+  const [serverFramesCount, setServerFramesCount] = useState(0);
+  const micFramesCountRef = useRef(0);
   const [partialText, setPartialText] = useState("");
   const [connected, setConnected] = useState(false);
   const [callEnded, setCallEnded] = useState(false);
@@ -289,7 +293,11 @@ export function TestConsolePage() {
 
   function playPcmChunk(chunk: Uint8Array) {
     const context = audioContextRef.current;
-    if (!context || context.state !== "running") return;
+    if (!context) return;
+    if (context.state === "suspended") {
+      void context.resume();
+    }
+    if (context.state !== "running") return;
 
     const merged = new Uint8Array(pcmCarryRef.current.length + chunk.length);
     merged.set(pcmCarryRef.current);
@@ -474,9 +482,17 @@ export function TestConsolePage() {
         break;
       }
 
+      case "audio_diagnostics": {
+        setServerFramesCount(Number(message.mic_frames ?? 0));
+        break;
+      }
+
       case "tts_error":
       case "voice_error":
+        captureNodeRef.current?.port.postMessage({ isSpeaking: false });
+        voiceConnectionRef.current?.sendPlaybackStatus("idle");
         setError(String(message.detail ?? "Voice service encountered an issue. Typed responses remain active."));
+        setVoiceErrorRecoverable(Boolean(message.recoverable));
         if (message.fatal) {
           void closeCall(false);
         }
@@ -522,6 +538,10 @@ export function TestConsolePage() {
     setCallbackRequested(false);
     setMessages([]);
     setError(null);
+    setVoiceErrorRecoverable(false);
+    setMicFramesTransmitted(0);
+    setServerFramesCount(0);
+    micFramesCountRef.current = 0;
     setPartialText("");
     setTimings({});
     timingsRef.current = {};
@@ -535,6 +555,10 @@ export function TestConsolePage() {
   async function answerCall() {
     if (!sessionId || connected) return;
     setError(null);
+    setVoiceErrorRecoverable(false);
+    setMicFramesTransmitted(0);
+    setServerFramesCount(0);
+    micFramesCountRef.current = 0;
     setVoiceState("PROCESSING");
     setCallEnded(false);
     setTimings({});
@@ -606,6 +630,10 @@ export function TestConsolePage() {
 
       worklet.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
         connection.sendAudio(event.data);
+        micFramesCountRef.current += 1;
+        if (micFramesCountRef.current % 25 === 0) {
+          setMicFramesTransmitted(micFramesCountRef.current);
+        }
       };
 
       source.connect(worklet);
@@ -758,6 +786,13 @@ export function TestConsolePage() {
 
             {connected && <div className="voice-timer">{formatDuration(callDuration)}</div>}
 
+            {connected && (
+              <div style={{ fontSize: "11px", display: "flex", alignItems: "center", gap: "6px", color: micFramesTransmitted > 0 ? "#34d399" : "#fbbf24", background: "rgba(15, 23, 42, 0.6)", padding: "4px 8px", borderRadius: "6px", border: "1px solid rgba(148, 163, 184, 0.2)" }}>
+                <span>{micFramesTransmitted > 0 ? "🎙️ Mic Active" : "🎙️ Mic Waiting"}</span>
+                <span style={{ color: "#94a3b8" }}>({micFramesTransmitted} sent{serverFramesCount > 0 ? ` · ${serverFramesCount} acked` : ""})</span>
+              </div>
+            )}
+
             <button
               className="developer-toggle"
               style={{ padding: "6px 12px", fontSize: "11px" }}
@@ -779,8 +814,35 @@ export function TestConsolePage() {
 
         {/* Global Error Banner */}
         {error && (
-          <div className="error-banner" role="alert" style={{ margin: 0, borderRadius: 12 }}>
-            <strong>Voice Notification:</strong> {error}
+          <div className="error-banner" role="alert" style={{ margin: 0, borderRadius: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
+            <div>
+              <strong>Voice Notification:</strong> {error}
+            </div>
+            {voiceErrorRecoverable && (
+              <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+                <button
+                  type="button"
+                  className="retry-speech-btn"
+                  onClick={() => {
+                    voiceConnectionRef.current?.retrySpeech();
+                    setError(null);
+                    setVoiceErrorRecoverable(false);
+                  }}
+                  style={{
+                    background: "#38bdf8",
+                    color: "#0f172a",
+                    border: "none",
+                    borderRadius: 6,
+                    padding: "6px 12px",
+                    fontSize: "11px",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  ↻ Retry Audio Playback
+                </button>
+              </div>
+            )}
           </div>
         )}
 

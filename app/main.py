@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 logger = logging.getLogger("kural.workers")
+logging.getLogger("kural").setLevel(logging.INFO)
 
 from kural.api import dashboard_router, router
 from kural.api_operations import operations_router

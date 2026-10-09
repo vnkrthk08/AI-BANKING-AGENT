@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import base64
 import asyncio
 from io import BytesIO
@@ -86,9 +87,17 @@ class SarvamRealtimeSTTAdapter:
     model_name = "saaras:v4"
     language_code = "en-IN"
 
-    def __init__(self, api_key: str | None = None, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        client: Any | None = None,
+        threshold: str | None = None,
+        min_speech_duration_ms: str | None = None,
+    ) -> None:
         self._api_key = api_key.strip() if api_key and api_key.strip() else None
         self._client = client
+        self.threshold = threshold or os.getenv("SARVAM_VAD_THRESHOLD", "0.65")
+        self.min_speech_duration_ms = min_speech_duration_ms or os.getenv("SARVAM_VAD_MIN_SPEECH_DURATION_MS", "350")
 
     def _get_client(self) -> Any:
         if self._client is None:
@@ -111,10 +120,10 @@ class SarvamRealtimeSTTAdapter:
             endpointing="vad",
             encoding="linear16",
             sample_rate="16000",
-            threshold="0.65",
+            threshold=self.threshold,
             prefix_padding_ms="300",
             silence_duration_ms="600",
-            min_speech_duration_ms="350",
+            min_speech_duration_ms=self.min_speech_duration_ms,
             request_options={"max_retries": 0},
         ) as websocket:
             yield SarvamRealtimeSTTSession(websocket)
@@ -189,7 +198,10 @@ class SarvamTTSAdapter:
         self._last_used[codec] = time.monotonic()
 
     async def _ensure_connection(self, codec: str) -> None:
-        if codec in self._websockets and time.monotonic() - self._last_used.get(codec, 0) < self.reusable_idle_seconds:
+        ws = self._websockets.get(codec)
+        underlying = getattr(ws, "_websocket", ws)
+        is_open = ws is not None and getattr(underlying, "open", True) and not getattr(underlying, "closed", False)
+        if is_open and time.monotonic() - self._last_used.get(codec, 0) < self.reusable_idle_seconds:
             return
         await self._reset_connection(codec)
         last_error: Exception | None = None
@@ -206,9 +218,10 @@ class SarvamTTSAdapter:
         raise SarvamConfigurationError("Sarvam TTS WebSocket connection failed") from last_error
 
     async def prewarm(self, codec: str = "linear16") -> None:
-        """Pre-warm the realtime WebSocket connection to eliminate first-turn setup lag."""
+        """Pre-warm the realtime WebSocket connection under lock to eliminate first-turn setup lag."""
         try:
-            await self._ensure_connection(codec)
+            async with self._connection_locks[codec]:
+                await self._ensure_connection(codec)
         except Exception:
             pass
 
@@ -235,41 +248,48 @@ class SarvamTTSAdapter:
         if not text.strip():
             raise ValueError("Cannot synthesize empty text")
         async with self._connection_locks[codec]:
-            await self._ensure_connection(codec)
-            websocket = self._websockets[codec]
-            received_audio = False
-            try:
-                await asyncio.wait_for(websocket.convert(text), timeout=self.operation_timeout_seconds)
-                await asyncio.wait_for(websocket.flush(), timeout=self.operation_timeout_seconds)
-                while True:
-                    message = await asyncio.wait_for(
-                        websocket.recv(), timeout=self.operation_timeout_seconds,
-                    )
-                    message_type = getattr(message, "type", None)
-                    if message_type == "audio":
-                        encoded = getattr(getattr(message, "data", None), "audio", None)
-                        if not encoded:
-                            continue
-                        chunk = base64.b64decode(encoded, validate=True)
-                        if chunk:
-                            received_audio = True
-                            self._last_used[codec] = time.monotonic()
-                            yield chunk
-                    elif message_type == "error":
-                        raise RuntimeError("Sarvam TTS returned a stream error")
-                    elif message_type == "event":
-                        event_type = getattr(getattr(message, "data", None), "event_type", None)
-                        if event_type == "final":
-                            break
-                if not received_audio:
-                    raise ValueError("Sarvam TTS returned an empty stream")
-                self._last_used[codec] = time.monotonic()
-            except asyncio.CancelledError:
-                await asyncio.shield(self._reset_connection(codec))
-                raise
-            except BaseException:
-                await self._reset_connection(codec)
-                raise
+            for attempt in range(2):
+                await self._ensure_connection(codec)
+                websocket = self._websockets[codec]
+                received_audio = False
+                try:
+                    await asyncio.wait_for(websocket.convert(text), timeout=self.operation_timeout_seconds)
+                    await asyncio.wait_for(websocket.flush(), timeout=self.operation_timeout_seconds)
+                    while True:
+                        message = await asyncio.wait_for(
+                            websocket.recv(), timeout=self.operation_timeout_seconds,
+                        )
+                        message_type = getattr(message, "type", None)
+                        if message_type == "audio":
+                            encoded = getattr(getattr(message, "data", None), "audio", None)
+                            if not encoded:
+                                continue
+                            chunk = base64.b64decode(encoded, validate=True)
+                            if chunk:
+                                received_audio = True
+                                self._last_used[codec] = time.monotonic()
+                                yield chunk
+                        elif message_type == "error":
+                            raise RuntimeError("Sarvam TTS returned a stream error")
+                        elif message_type == "event":
+                            event_type = getattr(getattr(message, "data", None), "event_type", None)
+                            if event_type == "final":
+                                break
+                    if not received_audio:
+                        raise ValueError("Sarvam TTS returned an empty stream")
+                    self._last_used[codec] = time.monotonic()
+                    return
+                except asyncio.CancelledError:
+                    await asyncio.shield(self._reset_connection(codec))
+                    raise
+                except ValueError:
+                    await self._reset_connection(codec)
+                    raise
+                except BaseException as error:
+                    await self._reset_connection(codec)
+                    if attempt == 0 and not received_audio:
+                        continue
+                    raise
 
     async def synthesize(self, text: str) -> bytes:
         """Collect streamed chunks for callers that still require a complete response."""

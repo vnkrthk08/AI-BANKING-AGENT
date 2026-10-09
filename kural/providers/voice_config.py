@@ -28,7 +28,11 @@ def create_realtime_stt_provider() -> Any:
     if provider in {"local", "on_premise", "bank_hosted"}:
         from kural.providers.local_asr import LocalBankASRAdapter
         return LocalBankASRAdapter()
-    return SarvamRealtimeSTTAdapter(api_key=_api_key())
+    return SarvamRealtimeSTTAdapter(
+        api_key=_api_key(),
+        threshold=os.getenv("SARVAM_VAD_THRESHOLD", "0.50"),
+        min_speech_duration_ms=os.getenv("SARVAM_VAD_MIN_SPEECH_DURATION_MS", "200"),
+    )
 
 
 def create_tts_provider() -> TTSProvider:

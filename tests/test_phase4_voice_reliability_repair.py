@@ -416,3 +416,91 @@ async def test_consecutive_multi_turn_flow(test_db):
     assert orchestrator._turn_sequence == 3
     s3 = repo.get_session("SESS-VOICE-REPAIR-01")
     assert s3.state == State.UPDATE_HELP
+
+
+@pytest.mark.anyio
+async def test_retry_speech_action_triggers_playback(test_db):
+    """Verify that receiving 'retry_speech' triggers speech playback of last utterance."""
+    repo = SqlAlchemyKuralRepository(test_db)
+    ws = AsyncMock()
+    ws.send_json = AsyncMock()
+
+    stt = MockRealtimeSTTSession()
+    tts = MockTTSProvider()
+    llm = MockLLMProvider()
+
+    orchestrator = RealtimeVoiceOrchestrator(ws, repo, stt, tts, llm)
+    orchestrator._session_id = "SESS-VOICE-REPAIR-01"
+    orchestrator._recent_assistant_utterances.append("Hello Rahul, this is Subbu.")
+
+    # Simulate client sending retry_speech
+    msg_retry = {"type": "websocket.receive", "text": '{"type": "retry_speech"}'}
+    msg_end = {"type": "websocket.receive", "text": '{"type": "end"}'}
+    ws.receive = AsyncMock(side_effect=[msg_retry, msg_end])
+
+    await orchestrator._read_microphone(0.0)
+    assert orchestrator._tts_task is not None
+    await orchestrator._tts_task
+    sent_types = [call.args[0].get("type") for call in ws.send_json.call_args_list if call.args]
+    assert "tts_started" in sent_types
+    assert "assistant_done" in sent_types
+
+
+@pytest.mark.anyio
+async def test_audio_diagnostics_emitted_periodically(test_db):
+    """Verify that audio_diagnostics messages are sent every 100 received microphone frames."""
+    repo = SqlAlchemyKuralRepository(test_db)
+    ws = AsyncMock()
+    ws.send_json = AsyncMock()
+
+    stt = MockRealtimeSTTSession()
+    tts = MockTTSProvider()
+    llm = MockLLMProvider()
+
+    orchestrator = RealtimeVoiceOrchestrator(ws, repo, stt, tts, llm)
+    orchestrator._session_id = "SESS-VOICE-REPAIR-01"
+
+    pcm_frame = {"type": "websocket.receive", "bytes": b"\x00" * 640}
+    end_msg = {"type": "websocket.receive", "text": '{"type": "end"}'}
+    messages = [pcm_frame] * 105 + [end_msg]
+    ws.receive = AsyncMock(side_effect=messages)
+
+    await orchestrator._read_microphone(0.0)
+    assert orchestrator._mic_frames_received == 105
+    sent_diagnostics = [
+        call.args[0] for call in ws.send_json.call_args_list
+        if call.args and call.args[0].get("type") == "audio_diagnostics"
+    ]
+    assert len(sent_diagnostics) >= 1
+    assert sent_diagnostics[0]["mic_frames"] == 100
+
+
+@pytest.mark.anyio
+async def test_recoverable_tts_error_reported(test_db):
+    """Verify that transient TTS failures report a recoverable error without crashing orchestrator."""
+    repo = SqlAlchemyKuralRepository(test_db)
+    ws = AsyncMock()
+    ws.send_json = AsyncMock()
+
+    stt = MockRealtimeSTTSession()
+    failing_tts = MagicMock()
+    async def failing_stream(text):
+        raise ConnectionResetError("Remote TTS socket reset")
+        yield b""
+    failing_tts.stream_realtime = failing_stream
+    llm = MockLLMProvider()
+
+    orchestrator = RealtimeVoiceOrchestrator(ws, repo, stt, failing_tts, llm)
+    orchestrator._session_id = "SESS-VOICE-REPAIR-01"
+
+    await orchestrator._start_speech("Hello test", 0.0, ended=False)
+    assert not orchestrator._is_assistant_speaking
+
+    sent_errors = [
+        call.args[0] for call in ws.send_json.call_args_list
+        if call.args and call.args[0].get("type") == "tts_error"
+    ]
+    assert len(sent_errors) == 1
+    assert sent_errors[0]["recoverable"] is True
+    assert "Voice playback is unavailable" in sent_errors[0]["detail"]
+
