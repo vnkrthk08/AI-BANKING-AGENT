@@ -40,5 +40,9 @@ class Database:
         finally:
             db_session.close()
 
+    def create_tables(self) -> None:
+        from kural.persistence.models import Base
+        Base.metadata.create_all(self.engine)
+
     def dispose(self) -> None:
         self.engine.dispose()

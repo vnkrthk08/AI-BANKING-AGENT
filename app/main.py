@@ -3,7 +3,7 @@
 from contextlib import asynccontextmanager
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import HTMLResponse
 
 logger = logging.getLogger("kural.workers")
@@ -24,6 +24,8 @@ from kural.services.campaign_service import CampaignService
 from kural.services.case_service import CaseService
 from kural.services.customer_service import CustomerService
 from kural.services.report_service import ReportService
+from kural.services.auth_service import AuthService
+from app.routers.auth import auth_router
 
 
 def create_app(repository: KuralRepository | None = None,
@@ -91,6 +93,10 @@ def create_app(repository: KuralRepository | None = None,
                 except Exception as exc:
                     logger.warning("Campaign pacing worker encountered transient error: %s", exc)
 
+        auth_svc = getattr(app.state, "auth_service", None)
+        if auth_svc is not None:
+            auth_svc.startup_cache_sync()
+
         cb_task = asyncio.create_task(callback_scheduler_worker())
         camp_task = asyncio.create_task(campaign_pacing_worker())
         yield
@@ -131,6 +137,7 @@ def create_app(repository: KuralRepository | None = None,
     app.state.call_service = CallService(app.state.database)
     app.state.agent_service = AgentService(app.state.database)
     app.state.report_service = ReportService(app.state.database)
+    app.state.auth_service = AuthService(app.state.database)
 
     _seed_demo_operations(app.state.campaign_service, app.state.customer_service, app.state.call_service)
 
@@ -143,6 +150,7 @@ def create_app(repository: KuralRepository | None = None,
     app.include_router(router)
     app.include_router(dashboard_router)
     app.include_router(operations_router)
+    app.include_router(auth_router)
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def root() -> str:
@@ -157,6 +165,43 @@ def create_app(repository: KuralRepository | None = None,
     def health() -> dict[str, str]:
         app.state.repository.health_check()
         return {"status": "ok", "service": "kural-ava", "mode": "prototype"}
+
+    @app.get("/health/ready", tags=["health"])
+    def readiness() -> dict[str, str]:
+        from kural.security.revocation_cache import revocation_cache
+        if not revocation_cache.is_ready:
+            raise HTTPException(status_code=503, detail="Service not ready: revocation cache synchronizing")
+        return {"status": "ready"}
+
+    @app.websocket("/ws/voice/{session_id}")
+    async def ws_voice_session(websocket: WebSocket, session_id: str) -> None:
+        ticket = websocket.query_params.get("ticket")
+        if not ticket:
+            await websocket.close(code=1008, reason="Policy Violation: missing authentication ticket")
+            return
+
+        db = getattr(websocket.app.state, "database", None)
+        if not db:
+            await websocket.close(code=1008, reason="Policy Violation: database unavailable")
+            return
+
+        auth_svc = getattr(websocket.app.state, "auth_service", None)
+        if not auth_svc:
+            auth_svc = AuthService(db)
+        valid = auth_svc.validate_and_burn_websocket_ticket(ticket, session_id)
+        if not valid:
+            await websocket.close(code=1008, reason="Policy Violation: ticket invalid or already consumed")
+            return
+
+        await websocket.accept()
+        await websocket.send_json({"type": "session_connected", "session_id": session_id})
+        try:
+            while True:
+                msg = await websocket.receive_text()
+                if msg == "ping":
+                    await websocket.send_text("pong")
+        except Exception:
+            pass
 
     return app
 

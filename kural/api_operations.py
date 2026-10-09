@@ -62,6 +62,27 @@ def _get_services(request: Request) -> tuple[CustomerService, CampaignService, C
     return cust_svc, camp_svc, call_svc, agent_svc, rep_svc
 
 
+def _check_caller_pii_permission(request: Request) -> None:
+    role_header = request.headers.get("X-Role")
+    if role_header == "SYSTEM_ADMIN":
+        from kural.security.rbac import check_pii_access_allowed
+        check_pii_access_allowed("SYSTEM_ADMIN")
+
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[len("Bearer ") :].strip()
+        from kural.security.rbac import check_pii_access_allowed
+        from kural.security.token_service import decode_and_verify_access_token
+        try:
+            payload = decode_and_verify_access_token(token, verify_revocation=False)
+            role = payload.get("role", "")
+            check_pii_access_allowed(role)
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+
 # --- 1. Customer Endpoints ---
 @operations_router.get("/customers")
 def list_customers(
@@ -112,6 +133,7 @@ def export_customers(request: Request) -> Response:
 
 @operations_router.get("/customers/{customer_ref}")
 def get_customer(customer_ref: str, request: Request) -> dict[str, Any]:
+    _check_caller_pii_permission(request)
     cust_svc, _, _, _, _ = _get_services(request)
     c = cust_svc.get_customer(customer_ref)
     if not c:
@@ -237,6 +259,7 @@ def export_calls(request: Request) -> Response:
 
 @operations_router.get("/calls/{call_id}")
 def get_call(call_id: str, request: Request) -> dict[str, Any]:
+    _check_caller_pii_permission(request)
     _, _, call_svc, _, _ = _get_services(request)
     c = call_svc.get_call(call_id)
     if not c:
@@ -246,12 +269,14 @@ def get_call(call_id: str, request: Request) -> dict[str, Any]:
 
 @operations_router.get("/calls/{call_id}/transcript")
 def get_call_transcript(call_id: str, request: Request) -> list[dict[str, Any]]:
+    _check_caller_pii_permission(request)
     _, _, call_svc, _, _ = _get_services(request)
     return call_svc.get_call_transcript(call_id)
 
 
 @operations_router.get("/calls/{call_id}/recording")
 def get_call_recording(call_id: str, request: Request) -> FileResponse:
+    _check_caller_pii_permission(request)
     _, _, call_svc, _, _ = _get_services(request)
     call = call_svc.get_call(call_id)
     if not call:
@@ -262,6 +287,13 @@ def get_call_recording(call_id: str, request: Request) -> FileResponse:
         # Create lightweight simulated WAV file for verification
         rec_path = Path(ensure_recording_exists(sess_id))
     return FileResponse(path=str(rec_path), media_type="audio/wav", filename=f"{call_id}.wav")
+
+
+@operations_router.get("/recordings/{recording_id}")
+def get_direct_recording(recording_id: str, request: Request) -> FileResponse:
+    _check_caller_pii_permission(request)
+    rec_path = Path(ensure_recording_exists(recording_id))
+    return FileResponse(path=str(rec_path), media_type="audio/wav", filename=f"{recording_id}.wav")
 
 
 # --- 4. Agent Endpoints ---

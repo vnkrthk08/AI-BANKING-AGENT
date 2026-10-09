@@ -535,3 +535,34 @@ async def reset_demo_data(request: Request) -> dict[str, str]:
     event_bus.publish("demo_reset", {"status": "reset", "timestamp": datetime.now(timezone.utc).isoformat()})
     return {"status": "ok", "message": "Demo data reset successfully"}
 
+
+@router.websocket("/ws/voice/{session_id}")
+async def ws_voice_session(websocket: WebSocket, session_id: str) -> None:
+    ticket = websocket.query_params.get("ticket")
+    if not ticket:
+        await websocket.close(code=1008, reason="Policy Violation: missing authentication ticket")
+        return
+
+    db = getattr(websocket.app.state, "database", None)
+    if not db:
+        await websocket.close(code=1008, reason="Policy Violation: database unavailable")
+        return
+
+    from kural.services.auth_service import AuthService
+    auth_svc = AuthService(db)
+    valid = auth_svc.validate_and_burn_websocket_ticket(ticket, session_id)
+    if not valid:
+        await websocket.close(code=1008, reason="Policy Violation: ticket invalid or already consumed")
+        return
+
+    await websocket.accept()
+    await websocket.send_json({"type": "session_connected", "session_id": session_id})
+    try:
+        while True:
+            msg = await websocket.receive_text()
+            if msg == "ping":
+                await websocket.send_text("pong")
+    except (WebSocketDisconnect, asyncio.CancelledError):
+        pass
+
+
