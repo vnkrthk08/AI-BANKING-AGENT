@@ -5,7 +5,9 @@ export type Disposition = "CLOSED" | "CALLBACK_SCHEDULED" | "ESCALATED" | "NOT_I
 export type CallStatus = "IN_PROGRESS" | "COMPLETED";
 export type CallbackStatus = "IMMEDIATE" | "SCHEDULED" | "OVERDUE" | "COMPLETED";
 export type CaseStatus = "NEW" | "ASSIGNED" | "IN_PROGRESS" | "RESOLVED";
+export type Priority = "URGENT" | "HIGH" | "NORMAL" | "LOW";
 export type AgentAvailability = "AVAILABLE" | "ON_CALL" | "BREAK" | "OFFLINE";
+
 
 export interface SessionResponse {
   session_id: string;

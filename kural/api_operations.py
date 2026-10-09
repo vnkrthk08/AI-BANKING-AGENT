@@ -309,7 +309,28 @@ def list_agents(request: Request, availability: str | None = None, team: str | N
     }
 
 
+@operations_router.post("/agents")
+async def create_agent(request: Request) -> dict[str, Any]:
+    _, _, _, agent_svc, rep_svc = _get_services(request)
+    data = await request.json()
+    name = data.get("name")
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    agent = agent_svc.create_agent(
+        name=name,
+        team=data.get("team", "Digital support · Tier 1"),
+        languages=data.get("languages", ["Hindi", "English"]),
+        skills=data.get("skills", ["APP_SUPPORT", "GENERAL_SUPPORT"]),
+        availability=data.get("availability", "AVAILABLE"),
+        agent_id=data.get("agent_id") or data.get("id"),
+    )
+    rep_svc.record_audit("AGENT_CREATED", "AGENT", agent["id"], detail=f"Registered agent {name}")
+    event_bus.publish("agent_created", {"agent_id": agent["id"]})
+    return agent
+
+
 @operations_router.patch("/agents/{agent_id}/status")
+
 async def patch_agent_status(agent_id: str, request: Request) -> dict[str, Any]:
     _, _, _, agent_svc, rep_svc = _get_services(request)
     data = await request.json()

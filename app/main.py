@@ -140,8 +140,6 @@ def create_app(repository: KuralRepository | None = None,
     app.state.report_service = ReportService(app.state.database)
     app.state.auth_service = AuthService(app.state.database)
 
-    _seed_demo_operations(app.state.campaign_service, app.state.customer_service, app.state.call_service)
-
     app.state.llm_provider = llm_provider if llm_provider is not None else create_llm_provider()
     app.state.stt_provider = stt_provider if stt_provider is not None else create_stt_provider()
     app.state.tts_provider = tts_provider if tts_provider is not None else create_tts_provider()
@@ -236,43 +234,5 @@ def create_app(repository: KuralRepository | None = None,
     return app
 
 
-def _seed_demo_operations(camp_svc: CampaignService, cust_svc: CustomerService, call_svc: CallService) -> None:
-    try:
-        existing_camps = camp_svc.list_campaigns()
-        if not existing_camps:
-            c1 = camp_svc.create_campaign(
-                name="App adoption · Q4",
-                objective="App adoption",
-                script_version="v2.4",
-                segment_size=8200,
-                max_attempts=3,
-                retry_gap_hours=24,
-                languages=["Hindi", "English", "Tamil"],
-                region="All India",
-                status="ACTIVE",
-            )
-            c2 = camp_svc.create_campaign(
-                name="App update follow-up",
-                objective="App update",
-                script_version="v1.8",
-                segment_size=3400,
-                max_attempts=2,
-                retry_gap_hours=36,
-                languages=["English", "Kannada", "Telugu"],
-                region="South",
-                status="ACTIVE",
-            )
-            cust1 = cust_svc.create_customer("Rajesh Sharma", "9876543210", "CUST-00001", preferred_language="Hindi", branch="Delhi NCR", region="North", app_status="INSTALLED", app_version="4.9.2")
-            cust2 = cust_svc.create_customer("Priya Sundaram", "9876543211", "CUST-00002", preferred_language="Tamil", branch="Chennai South", region="South", app_status="NOT_INSTALLED")
-            cust3 = cust_svc.create_customer("Amit Patel", "9876543212", "CUST-00003", preferred_language="Hindi", branch="Mumbai Metro", region="West", app_status="OUTDATED", app_version="4.7.0")
-            cust_svc.create_customer("Sneha Reddy", "9876543213", "CUST-00004", preferred_language="Telugu", branch="Hyderabad Central", region="South", app_status="INSTALLED", app_version="5.0.0")
-            cust_svc.create_customer("Rahul Mukherjee", "9876543214", "CUST-00005", preferred_language="Bengali", branch="Kolkata East", region="East", app_status="NOT_INSTALLED")
-
-            camp_svc.add_contact(c1["id"], cust1["customer_ref"], cust1["phone"])
-            camp_svc.add_contact(c1["id"], cust2["customer_ref"], cust2["phone"])
-            camp_svc.add_contact(c1["id"], cust3["customer_ref"], cust3["phone"])
-    except Exception:
-        pass
-
-
 app = create_app()
+

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ArrowRight, Pause, Play, Plus } from "@phosphor-icons/react";
+import { ArrowRight, Megaphone, Pause, Play, Plus } from "@phosphor-icons/react";
 import { PageHeading } from "../components/PageHeading";
 import { PageState } from "../components/PageState";
 import { StatusPill } from "../components/StatusPill";
@@ -112,32 +112,56 @@ export function CampaignsPage() {
           </button>
         </form>
       )}
-      <div className="ops-campaign-layout">
-        <section className="ops-campaign-list">
-          {snapshot.campaigns.map((item) => (
-            <button
-              key={item.id}
-              className={`ops-campaign-row ${activeId === item.id ? "active" : ""}`}
-              onClick={() => setSelected(item.id)}
-            >
-              <span>
-                <strong>{item.name}</strong>
-                <small>
-                  {item.objective} · {item.id}
-                </small>
-              </span>
-              <StatusPill value={item.status} />
-              <span className="ops-campaign-mini">
-                {item.callsDialed.toLocaleString("en-IN")} dialed <b>{(item.answerRate * 100).toFixed(0)}% answer</b>
-              </span>
-            </button>
-          ))}
+      {snapshot.campaigns.length === 0 ? (
+        <section
+          style={{
+            background: "#ffffff",
+            border: "1px dashed #cbd5e1",
+            borderRadius: "14px",
+            padding: "48px 24px",
+            textAlign: "center",
+            margin: "24px 0",
+          }}
+        >
+          <Megaphone size={36} color="#0d9488" style={{ marginBottom: "12px" }} />
+          <h3 style={{ fontSize: "16px", fontWeight: 700, margin: "0 0 8px", color: "#0f172a" }}>
+            No Outbound Campaigns Created
+          </h3>
+          <p style={{ color: "#64748b", maxWidth: "440px", margin: "0 auto 16px", fontSize: "13.5px" }}>
+            Configure and launch targeted customer outreach campaigns for app adoption, service updates, or KYC follow-ups.
+          </p>
+          <button className="ops-button ops-button-primary" onClick={() => setCreating(true)}>
+            <Plus size={15} /> Create First Campaign
+          </button>
         </section>
-        {campaign && (
-          <div className="ops-campaign-detail">
-            <Panel title={campaign.name} subtitle={`${campaign.id} · ${campaign.objective}`} actions={<StatusPill value={campaign.status} />}>
-              <div className="ops-campaign-kpis">
-                <div>
+      ) : (
+        <div className="ops-campaign-layout">
+          <section className="ops-campaign-list">
+            {snapshot.campaigns.map((item) => (
+              <button
+                key={item.id}
+                className={`ops-campaign-row ${activeId === item.id ? "active" : ""}`}
+                onClick={() => setSelected(item.id)}
+              >
+                <span>
+                  <strong>{item.name}</strong>
+                  <small>
+                    {item.objective} · {item.id}
+                  </small>
+                </span>
+                <StatusPill value={item.status} />
+                <span className="ops-campaign-mini">
+                  {item.callsDialed.toLocaleString("en-IN")} dialed <b>{(item.answerRate * 100).toFixed(0)}% answer</b>
+                </span>
+              </button>
+            ))}
+          </section>
+          {campaign && (
+            <div className="ops-campaign-detail">
+              <Panel title={campaign.name} subtitle={`${campaign.id} · ${campaign.objective}`} actions={<StatusPill value={campaign.status} />}>
+                <div className="ops-campaign-kpis">
+                  <div>
+
                   <small>SEGMENT</small>
                   <strong>{campaign.segmentSize.toLocaleString("en-IN")}</strong>
                 </div>
@@ -189,6 +213,8 @@ export function CampaignsPage() {
           </div>
         )}
       </div>
+      )}
     </>
   );
 }
+

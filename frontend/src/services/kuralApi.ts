@@ -53,10 +53,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const kuralApi = {
   health: () => request<{ status: string }>("/health"),
-  createSession: () => request<SessionResponse>("/api/v1/sessions", {
+  createSession: (customerRef?: string) => request<SessionResponse>("/api/v1/sessions", {
     method: "POST",
-    body: JSON.stringify({ customer_ref: "CUST001" }),
+    body: JSON.stringify({ customer_ref: customerRef || "CUST001" }),
   }),
+
   sendMessage: (sessionId: string, text: string) => request<TurnResponse>(
     `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
     { method: "POST", body: JSON.stringify({ text }) },

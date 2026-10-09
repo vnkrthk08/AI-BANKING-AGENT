@@ -2,8 +2,9 @@ import { createMockSnapshot, currentDemoRoleActor, MOCK_SNAPSHOT } from "../mock
 import type { AuditEvent, Callback, DashboardSnapshot, EscalationCase, ReportSchedule, Role } from "../types";
 
 export type DashboardMode = "mock" | "live";
-declare global { interface ImportMetaEnv { readonly VITE_DASHBOARD_API_MODE?: string } interface ImportMeta { readonly env: ImportMetaEnv } }
-const mode: DashboardMode = import.meta.env.VITE_DASHBOARD_API_MODE === "live" ? "live" : "mock";
+declare global { interface ImportMetaEnv { readonly VITE_DASHBOARD_API_MODE?: string; readonly VITE_MOCK_DATA?: string } interface ImportMeta { readonly env: ImportMetaEnv } }
+const mode: DashboardMode = (import.meta.env.VITE_MOCK_DATA === "true" || import.meta.env.VITE_DASHBOARD_API_MODE === "mock") ? "mock" : "live";
+
 
 export interface DashboardApi {
   readonly mode: DashboardMode;
@@ -14,9 +15,13 @@ export interface DashboardApi {
   createCallback(callback: Callback): Promise<void>;
   updateCampaign(id: string, patch: Record<string, unknown>): Promise<void>;
   createCampaign(campaign: DashboardSnapshot["campaigns"][number]): Promise<void>;
+  createCase(caseData: Record<string, unknown>): Promise<void>;
+  createAgent(agentData: Record<string, unknown>): Promise<void>;
+  updateAgent(id: string, patch: Record<string, unknown>): Promise<void>;
   getSchedules(): Promise<ReportSchedule[]>;
   saveSchedule(schedule: ReportSchedule): Promise<void>;
 }
+
 
 let mockSnapshot = createMockSnapshot();
 const AUDIT_KEY = "kural-ops-audit-demo-v1";
@@ -106,6 +111,18 @@ const mockApi: DashboardApi = {
     writeStored("kural-ops-campaigns-demo-v1", mockSnapshot.campaigns);
   },
   async createCampaign(campaign) { mockSnapshot = { ...mockSnapshot, campaigns: [campaign, ...mockSnapshot.campaigns] }; writeStored("kural-ops-campaigns-demo-v1", mockSnapshot.campaigns); },
+  async createCase(caseData) {
+    const newCase = { id: `CASE-UI-${crypto.randomUUID().slice(0, 8)}`, status: "NEW", priority: "NORMAL", createdAt: new Date().toISOString(), ...caseData } as any;
+    mockSnapshot = { ...mockSnapshot, escalations: [newCase, ...mockSnapshot.escalations] };
+    writeStored("kural-ops-cases-demo-v1", mockSnapshot.escalations);
+  },
+  async createAgent(agentData) {
+    const newAgent = { id: `AG-${mockSnapshot.agents.length + 1}`, name: "New Agent", team: "Digital support · Tier 1", languages: ["Hindi", "English"], availability: "AVAILABLE", activeCalls: 0, handledToday: 0, avgResolutionMin: 0, slaHitPercent: 100, ...agentData } as any;
+    mockSnapshot = { ...mockSnapshot, agents: [newAgent, ...mockSnapshot.agents] };
+  },
+  async updateAgent(id, patch) {
+    mockSnapshot = { ...mockSnapshot, agents: mockSnapshot.agents.map((a) => a.id === id ? { ...a, ...patch } : a) };
+  },
   async getSchedules() { return readStored<ReportSchedule[]>(SCHEDULE_KEY, []); },
   async saveSchedule(schedule) { writeStored(SCHEDULE_KEY, [schedule, ...readStored<ReportSchedule[]>(SCHEDULE_KEY, [])]); },
 };
@@ -129,13 +146,17 @@ const liveApi: DashboardApi = {
     return fetchJson<AuditEvent>("/api/audit", { method: "POST", body: JSON.stringify({ action, resourceType, resourceId, role, detail }) });
   },
   async updateCase(id, patch) { await fetchJson(`/api/escalations/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }); },
+  async createCase(caseData) { await fetchJson("/api/escalations", { method: "POST", body: JSON.stringify(caseData) }); },
   async updateCallback(id, patch) { await fetchJson(`/api/callbacks/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }); },
   async createCallback(callback) { await fetchJson("/api/callbacks", { method: "POST", body: JSON.stringify(callback) }); },
   async updateCampaign(id, patch) { await fetchJson(`/api/campaigns/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }); },
   async createCampaign(campaign) { await fetchJson("/api/campaigns", { method: "POST", body: JSON.stringify(campaign) }); },
+  async createAgent(agentData) { await fetchJson("/api/agents", { method: "POST", body: JSON.stringify(agentData) }); },
+  async updateAgent(id, patch) { await fetchJson(`/api/agents/${encodeURIComponent(id)}/status`, { method: "PATCH", body: JSON.stringify(patch) }); },
   getSchedules() { return fetchJson<ReportSchedule[]>("/api/reports/schedules"); },
   async saveSchedule(schedule) { await fetchJson("/api/reports/schedules", { method: "POST", body: JSON.stringify(schedule) }); },
 };
+
 
 export const dashboardApi: DashboardApi = mode === "live" ? liveApi : mockApi;
 

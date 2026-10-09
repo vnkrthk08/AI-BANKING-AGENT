@@ -150,6 +150,39 @@ class AgentService:
             best_agent = scored[0][1]
             return self._serialize_agent(best_agent)
 
+    def create_agent(
+        self,
+        name: str,
+        team: str = "Digital support · Tier 1",
+        languages: list[str] | None = None,
+        skills: list[str] | None = None,
+        availability: str = "AVAILABLE",
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        from sqlalchemy import func
+        with self.database.session() as s:
+            now = datetime.now(timezone.utc)
+            if not agent_id:
+                count = s.scalar(select(func.count(AgentRow.agent_id))) or 0
+                agent_id = f"AG-{count + 1:03d}"
+            row = AgentRow(
+                agent_id=agent_id,
+                name=name,
+                team=team,
+                languages_json=languages or ["Hindi", "English"],
+                availability=availability,
+                active_calls=0,
+                handled_today=0,
+                avg_resolution_min=0,
+                sla_hit_percent=100.0,
+                skills_json=skills or ["APP_SUPPORT", "GENERAL_SUPPORT"],
+                created_at=now,
+                updated_at=now,
+            )
+            s.add(row)
+            s.commit()
+            return self._serialize_agent(row)
+
     @staticmethod
     def _serialize_agent(row: AgentRow) -> dict[str, Any]:
         return {
@@ -163,3 +196,4 @@ class AgentService:
             "avgResolutionMin": row.avg_resolution_min,
             "slaHitPercent": row.sla_hit_percent,
         }
+
