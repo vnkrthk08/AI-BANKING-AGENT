@@ -21,6 +21,11 @@ class Database:
             if self.url in {"sqlite://", "sqlite:///:memory:"}:
                 from sqlalchemy.pool import StaticPool
                 options["poolclass"] = StaticPool
+        elif self.url.startswith("postgresql"):
+            options["pool_size"] = 60
+            options["max_overflow"] = 12  # Exactly 72 max connections under Phase 4 budget
+            options["pool_timeout"] = 10.0
+            options["pool_recycle"] = 1800
         self.engine: Engine = create_engine(self.url, **options)
         if self.url.startswith("sqlite"):
             from sqlalchemy import event
