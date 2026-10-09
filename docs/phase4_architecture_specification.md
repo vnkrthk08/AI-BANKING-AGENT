@@ -1,7 +1,7 @@
 # AVA Phase 4 Architecture Specification
 ## Security, Production Hardening & Scale
 
-**Document Version:** 1.0.2  
+**Document Version:** 1.0.2 (Incorporating Addendum v1.0.2-A)  
 **Baseline Git Tag:** `phase3-accepted-frozen`  
 **Baseline Git Commit:** `59edf51`  
 **Status:** Under Final Architecture Review (Design-Only Milestone)  
@@ -61,7 +61,7 @@ The AVA architecture defines four distinct trust zones separated by explicit sec
 A fundamental security reality in voice AI systems is that **raw audio enters the system before automated text-based redaction can execute**:
 
 ```
-Customer Spoken Audio (Contains Potential OTP, Card No., PIN)
+Customer Spoken Audio (Contains Potential Spoken OTP, Card No., PIN)
        │
        ▼
 [ Web Audio PCM Stream (16kHz LINEAR16) ]
@@ -89,9 +89,9 @@ Because customers may speak authentication credentials (OTPs, PINs, card numbers
 To address this boundary honestly and rigorously, AVA defines two explicit architectural models:
 
 * **Option A: Bank-Controlled Boundary Deployment (Canonical Requirement)**
-  - The speech-to-text model (e.g., self-hosted Sarvam Saaras container, or optimized Whisper-large-v3-turbo) is deployed entirely inside Town Bank's private VPC or on-premises security perimeter.
-  - Zero raw audio traverses the public internet or external third-party servers.
-  - All spoken credentials remain strictly within the bank's boundary.
+  - The speech-to-text model is deployed entirely inside Town Bank's private VPC or on-premises security perimeter with zero external network egress.
+  - **Feasibility & Availability Determination:** Sarvam Saaras is commercially offered primarily via managed cloud SaaS APIs (`api.sarvam.ai`). If an on-premises enterprise container appliance from Sarvam AI cannot be contractually certified and verified for Town Bank's infrastructure, the **approved, verified bank-controlled alternative** is an open-weights ASR engine: containerized **Faster-Whisper (Whisper-large-v3-turbo)** or **NVIDIA NeMo Conformer-CTC** hosted on Triton Inference Server within the bank's GPU cluster.
+  - Zero raw audio traverses the public internet or external third-party servers. All spoken credentials remain strictly within the bank's boundary.
   - **Compliance Status:** **Option A is the ONLY architecture that inherently satisfies AVA's strict bank-data-boundary invariant and RBI master directions on digital payment data localization.**
 
 * **Option B: Documented External-Processing Exception (SaaS Provider)**
@@ -102,7 +102,7 @@ To address this boundary honestly and rigorously, AVA defines two explicit archi
     3. Indian Data Localization: Vendor compute must reside strictly within Indian sovereign territory (e.g., AWS `ap-south-1` / MeitY-empanelled cloud).
     4. Written risk acceptance signed by Town Bank Chief Information Security Officer (CISO) and Legal Counsel.
 
-**Policy Directive:** Option B is approved exclusively for synthetic testing and development evaluation. **External processing of real customer voice data is strictly disabled until the formal Option B bank approvals exist or Option A on-premises containers are deployed.**
+**Policy Directive:** Option B is approved exclusively for synthetic testing and development evaluation. **External speech processing is strictly disabled for all real customer voice sessions until either the verified on-premises appliance (Option A) is deployed or formal bank CISO approval (Option B) is granted.**
 
 ---
 
@@ -143,10 +143,17 @@ To address this boundary honestly and rigorously, AVA defines two explicit archi
    - **Server Storage:** The database stores only the `SHA-256` hash of the refresh token in `refresh_tokens`, salted per entry.
 3. **Token Family Reuse Detection & Concurrent Refresh Race Handling:**
    - Each refresh token belongs to a cryptographically unique `family_id` with a monotonic generation number.
-   - **Legitimate Concurrent Refresh Tolerance (Grace Window):** When multiple frontend components request data simultaneously as the access token expires, multiple refresh calls may hit the server concurrently. To prevent false-positive alarms:
-     - Upon successful refresh of Token $T_n$, the server issues $T_{n+1}$ and marks $T_n$ with `replaced_at = NOW()`.
-     - A strict **15-second grace window** is permitted: if a concurrent request presents $T_n$ within 15 seconds of `replaced_at`, the server returns the already-issued active token pair without raising an alarm.
-   - **Malicious Reuse Detection:** If an invalidated token is presented *after* the 15-second grace window (or if an older generation in the family is presented):
+   - **Atomic Database-Level Refresh Exchange:** To eliminate race conditions when multiple client requests hit `/api/auth/refresh` concurrently, the token exchange is serialized via database row-level locking:
+     ```sql
+     SELECT token_id, family_id, generation, replaced_at, revoked, next_token_id
+     FROM refresh_tokens
+     WHERE token_hash = :hash
+     FOR UPDATE;
+     ```
+   - **Legitimate Concurrent Refresh Tolerance (Grace Window):**
+     - When Token $T_n$ is refreshed, the server records the newly generated Token $T_{n+1}$ in `next_token_id` and sets `replaced_at = NOW()`.
+     - A strict **15-second grace window** is permitted: if a concurrent in-flight request presents $T_n$ within 15 seconds of `replaced_at`, the server returns the already-issued $T_{n+1}$ and access token pair without incrementing generation or flagging an alarm.
+   - **Malicious Reuse Detection & Replay Handling:** If an invalidated token is presented *after* the 15-second grace window (or if an older generation in the family is presented):
      - The event is classified as an active replay attack.
      - The entire `family_id` is immediately revoked in the database (`revoked = true`).
      - An emergency `SECURITY_ALERT` is written to the immutable audit ledger.
@@ -155,7 +162,8 @@ To address this boundary honestly and rigorously, AVA defines two explicit archi
    - Stateless JWTs cannot be revoked client-side. To ensure compromised token families or locked users are barred immediately:
      - Each user record maintains an integer `token_version`.
      - Revoking a user's sessions increments `user.token_version` and publishes the revoked `family_id` / `jti` to an in-memory / database blocklist cache with a 15-minute TTL (the access token lifespan).
-     - The FastAPI authentication dependency (`get_current_user`) checks the token's `family_id` against the blocklist and verifies `token.token_version == user.token_version`. Compromised tokens are rejected in $< 1 \text{ ms}$.
+     - The FastAPI authentication dependency (`get_current_user`) checks the token's `family_id` against the blocklist and verifies `token.token_version == user.token_version`.
+     - **Performance Classification:** Sub-millisecond JWT rejection is formally recognized as an **Unverified Performance Target** ($P_{95} < 5\text{ ms}$ via local memory LRU cache) to be empirically benchmarked and confirmed during Milestone 4.1 testing.
 5. **MFA Enforcement & Recovery:**
    - **Mandatory MFA:** Privileged roles (`SYSTEM_ADMIN`, `SUPERVISOR`, `COMPLIANCE_OFFICER`) MUST configure TOTP (RFC 6238) or FIDO2 WebAuthn before accessing protected routes.
    - **Backup Recovery Codes:** 8 cryptographically random single-use backup recovery codes generated at provisioning, stored PBKDF2-hashed in the database, and invalidated upon first use.
@@ -306,12 +314,20 @@ To prevent dual-write inconsistencies (where a database update succeeds but an e
 * **Lease Duration:** The claiming worker sets `status = 'PROCESSING'`, `locked_until = NOW() + INTERVAL '30 seconds'`, and `worker_id = :worker_id`.
 * **Crash Recovery:** If a worker terminates abruptly, its lease expires (`locked_until < NOW()`). On the next polling cycle, a surviving worker automatically re-claims the event.
 
-### 7.3 At-Least-Once Delivery vs. Exactly-Once Side Effects
-* Outbox delivery is physically **at-least-once**.
-* To guarantee **exactly-once business side effects**, all downstream operations are idempotent:
-  - Downstream external APIs (telephony simulation, webhook dispatch) receive an immutable `Idempotency-Key: <idempotency_key>`.
-  - Internal database mutations execute conditional transitions (`UPDATE ... WHERE status = 'EXPECTED'`).
-  - Consumers verify the idempotency key and return cached results for duplicate dispatches without re-executing.
+### 7.3 At-Least-Once Delivery vs. Exactly-Once Logical Effects Boundary
+* **Physical Delivery Invariant:** Physical message delivery across networks, HTTP endpoints, WebSocket transports, and worker polling loops is strictly **AT-LEAST-ONCE**. Worker failures, network retries, and process restarts can result in duplicate message delivery.
+* **Explicit Idempotent Transaction Boundaries:**
+  "Exactly-once" business behavior is guaranteed **STRICTLY AND ONLY within explicit idempotent transaction boundaries**:
+  1. **Internal Database State:** Bound by PostgreSQL ACID transactions. State transitions use atomic conditional updates:
+     ```sql
+     UPDATE campaign_contacts
+     SET status = 'QUEUED', updated_at = NOW()
+     WHERE contact_id = :cid AND status IN ('PENDING', 'RETRY_SCHEDULED')
+     RETURNING contact_id;
+     ```
+     If an outbox event is re-processed, the conditional update matches zero rows and mutates no state.
+  2. **External Dispatches & Side Effects:** Bound by an explicit, mandatory `idempotency_key` stored in `outbox.idempotency_key` and transmitted downstream via HTTP headers (`Idempotency-Key: <key>`) or gateway call request IDs. Downstream systems maintain an idempotency table; re-deliveries return the cached response with zero duplicate physical dialing or message dispatch.
+* **Outside these explicit idempotent boundaries, delivery semantics remain strictly at-least-once.**
 * **Dead-Letter Queue:** Events failing 5 consecutive attempts transition to `status = 'DEAD_LETTER'` with full exception preservation, unblocking queues and alerting on-call engineers.
 
 ---
@@ -451,11 +467,12 @@ All concurrency claims are categorized as **TARGETS** until empirically validate
 ### Milestone 4.1: Authentication, Authorization & RBAC
 * **Concrete Acceptance Tests:**
   1. `test_cookie_host_prefix_compliance`: Verifies `Set-Cookie` header includes `__Host-` prefix, `Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`, and NO `Domain`.
-  2. `test_refresh_token_concurrent_grace_window`: Verifies concurrent refresh requests within 15 seconds succeed without triggering reuse alerts.
-  3. `test_refresh_token_family_reuse_revocation`: Verifies presenting a revoked refresh token after 15 seconds immediately invalidates the entire token family and terminates sessions.
-  4. `test_access_jwt_immediate_revocation`: Verifies that incrementing `user.token_version` immediately causes active access JWTs to be rejected with HTTP 401.
-  5. `test_system_admin_pii_access_blocked`: Verifies `SYSTEM_ADMIN` role receives HTTP 403 on `/api/calls/{id}`, `/api/recordings/{id}`, and customer tables.
-  6. `test_single_use_websocket_ticket_burn`: Verifies that connecting twice with the same ticket fails on the second attempt with WebSocket code 1008.
+  2. `test_refresh_token_concurrent_atomic_exchange`: Verifies parallel refresh requests using row-level locking return the single generated token without generation divergence or family revocation.
+  3. `test_refresh_token_concurrent_grace_window`: Verifies concurrent refresh requests within 15 seconds succeed without triggering reuse alerts.
+  4. `test_refresh_token_family_reuse_revocation`: Verifies presenting a revoked refresh token after 15 seconds immediately invalidates the entire token family and terminates sessions.
+  5. `test_jwt_revocation_latency_benchmark`: Measures empirical $P_{95}$ latency of JWT rejection following `token_version` increment, validating against the target SLO.
+  6. `test_system_admin_pii_access_blocked`: Verifies `SYSTEM_ADMIN` role receives HTTP 403 on `/api/calls/{id}`, `/api/recordings/{id}`, and customer tables.
+  7. `test_single_use_websocket_ticket_burn`: Verifies that connecting twice with the same ticket fails on the second attempt with WebSocket code 1008.
 
 ### Milestone 4.2: Data Protection, Cryptography & PII
 * **Concrete Acceptance Tests:**
@@ -471,14 +488,16 @@ All concurrency claims are categorized as **TARGETS** until empirically validate
   2. `test_outbox_atomic_commit`: Verifies domain state mutation and outbox event commit in the exact same transaction; simulating a rollback leaves neither.
   3. `test_outbox_worker_crash_recovery`: Verifies an uncompleted outbox lease is safely claimed and processed by a surviving worker after lease expiry.
   4. `test_at_least_once_idempotent_dispatch`: Verifies that re-dispatching an outbox event with the same `idempotency_key` produces zero duplicate side effects.
-  5. `test_connection_pool_bounds_under_load`: Verifies total application connection usage stays within the 72-connection allocation under maximum concurrency.
+  5. `test_outbox_idempotent_external_side_effect_deduplication`: Verifies that replaying an outbox event with a duplicate `idempotency_key` against the telephony gateway simulation produces zero duplicate dial requests.
+  6. `test_connection_pool_bounds_under_load`: Verifies total application connection usage stays within the 72-connection allocation under maximum concurrency.
 
 ### Milestone 4.4: Compliance Policy Engine & Tamper-Evident Ledger
 * **Concrete Acceptance Tests:**
   1. `test_pre_dispatch_dnd_fail_closed`: Verifies that a simulated telecom DND registry timeout blocks outbound dialing immediately.
   2. `test_opt_out_realtime_precedence`: Verifies customer opt-out during a call instantly overrides campaign enrollment.
-  3. `test_audit_hash_chain_gap_detection`: Verifies deleting or modifying an audit row causes the chain verification utility to pinpoint the exact tampered sequence index.
-  4. `test_metrics_t0_to_t8_telemetry`: Verifies Prometheus `/metrics` correctly differentiates between Time-to-First-Audio ($T_6$) and Full Turn Completion ($T_8$).
+  3. `test_real_customer_voice_external_stt_block`: Verifies that the voice orchestrator strictly blocks session initialization if real customer mode is set and external STT is configured without on-premises certification.
+  4. `test_audit_hash_chain_gap_detection`: Verifies deleting or modifying an audit row causes the chain verification utility to pinpoint the exact tampered sequence index.
+  5. `test_metrics_t0_to_t8_telemetry`: Verifies Prometheus `/metrics` correctly differentiates between Time-to-First-Audio ($T_6$) and Full Turn Completion ($T_8$).
 
 ### Milestone 4.5: Empirical Load Testing & Production Security Gates
 * **Concrete Acceptance Tests:**
@@ -500,8 +519,8 @@ All concurrency claims are categorized as **TARGETS** until empirically validate
 
 ### 13.2 Architectural Decisions Changed in v1.0.2
 * **Decision 1 (Rollbacks):** Removed all unsafe rollback modes (`REQUIRE_AUTH=false`, plaintext PII writes, permissive calling policy, SQLite fallback post-cutover, blind git checkouts). Replaced with fail-closed procedures, break-glass admin, and schema-compatible roll-forwards.
-* **Decision 2 (Voice Boundary):** Documented raw audio containing credentials prior to STT. Formally defined Option A (bank-controlled boundary) as the only compliant model, with Option B (external SaaS) restricted to synthetic testing pending bank CISO approval.
-* **Decision 3 (Cookies & Sessions):** Corrected `__Host-` cookie configuration to `Path=/` with no `Domain`. Added 15-second grace window for concurrent refreshes and immediate JWT revocation via `token_version`.
+* **Decision 2 (Voice Boundary):** Documented raw audio containing credentials prior to STT. Formally defined Option A (bank-controlled boundary) as canonical, with open-weights Faster-Whisper / Triton as the verified on-prem fallback. Defined Option B (external SaaS) as restricted to synthetic testing pending bank CISO approval.
+* **Decision 3 (Cookies & Sessions):** Corrected `__Host-` cookie configuration to `Path=/` with no `Domain`. Added atomic row locking with 15-second grace window for concurrent refreshes and immediate JWT revocation via `token_version` (target SLO $P_{95} < 5\text{ ms}$).
 * **Decision 4 (Cryptography):** Selected per-recording DEKs for cryptographic shredding. Added authenticated recording-completion manifests to detect chunk truncation. Documented realistic Python memory guarantees.
 * **Decision 5 (Cutover & Outbox):** Defined 3-phase maintenance freeze for SQLite cutover. Distinguished at-least-once outbox delivery from exactly-once side effects via idempotency keys. Unified `psycopg` v3 async and sync engines with 72-connection pool limits.
 * **Decision 6 (RBAC & Audit):** Replaced hierarchical inheritance with explicit permission matrix strictly separating `SYSTEM_ADMIN` from customer data. Added mandatory MFA for privileged roles and non-blocking monotonic audit sequencing.
@@ -513,8 +532,35 @@ All concurrency claims are categorized as **TARGETS** until empirically validate
 
 The following items are formal governance gates that require written sign-off by Town Bank authorities prior to initiating production deployment:
 
-1. **Voice-Provider STT Processing Model:** Written approval from Bank CISO selecting between on-premises container deployment (Option A) or formal cloud SaaS exception (Option B with zero-retention DPA).
+1. **Voice-Provider STT Processing Model:** Written approval from Bank CISO selecting between on-premises container deployment (Option A: Sarvam on-prem or Faster-Whisper Triton) or formal cloud SaaS exception (Option B with zero-retention DPA).
 2. **TRAI Calling Windows & Campaign Categories:** Formal written sign-off by Bank Legal & Compliance on operational calling hours and campaign classifications (Service vs Promotional).
 3. **KMS Key Custody Agreement:** Written agreement on whether master encryption keys (KEKs) reside in Town Bank's internal HSM, Google Cloud KMS, or AWS KMS.
 4. **Audit Retention & Purge Policy:** Sign-off on the 180-day standard retention window versus the 3-year financial dispute hold requirement.
 5. **Telephony Carrier & DLT Registration:** Selection of licensed Access Provider for 140-series CLI allocation and enterprise DLT portal registration.
+
+---
+
+## 15. Architecture Addendum v1.0.2-A: Final Focused Clarifications
+
+This addendum formalizes the three focused resolutions approved during the final Phase 4 v1.0.2 architecture review:
+
+### 15.1 Speech Processing Feasibility & Bank-Controlled Invariant
+1. **Commercial Availability Reality:** Proprietary Sarvam Saaras STT is commercially offered primarily via managed multi-tenant cloud APIs (`api.sarvam.ai`). Dedicated on-premises container appliances require specialized vendor infrastructure partnerships that remain unverified for the initial deployment.
+2. **Approved Verified Alternative:** If an on-premises Sarvam container cannot be verified and certified prior to production deployment, Town Bank mandates deployment of an open-weights, bank-hosted ASR model within its private VPC:
+   - **Primary Engine:** Containerized **Faster-Whisper (Whisper-large-v3-turbo / medium.en)** or **NVIDIA NeMo Conformer-CTC** running on Triton Inference Server in the bank's private GPU cluster.
+   - **Zero Egress:** Audio never leaves the bank network; spoken credentials remain strictly inside the bank perimeter.
+3. **Operational Policy:** External speech processing via Sarvam cloud APIs remains **STRICTLY DISABLED for all real customer voice sessions**. It is approved exclusively for synthetic testing until either the verified on-premises appliance is deployed or formal bank CISO approval is granted.
+
+### 15.2 Race-Safe Refresh Grace Window & Measured JWT Revocation Target
+1. **Atomic Token Exchange:** Parallel refresh requests are serialized using database row-level locking (`SELECT ... FOR UPDATE` on `refresh_tokens`). The first arrival issues token $T_{n+1}$, marks $T_n$ with `replaced_at = NOW()`, and records `next_token_id`.
+2. **Replay vs. Grace Window:**
+   - In-flight requests presenting $T_n$ within the 15-second grace window receive the already-issued $T_{n+1}$ without triggering security alerts.
+   - Any presentation of $T_n$ *after* 15 seconds (or presentation of an older generation) is treated as an active replay attack, immediately revoking the entire `family_id` and all associated user sessions.
+3. **JWT Revocation Latency Target:** Sub-millisecond JWT rejection is formally recognized as an **Unverified Latency Target** ($P_{95} < 5\text{ ms}$ via local memory cache). It will be empirically benchmarked under production load in Milestone 4.1 rather than assumed without measurement.
+
+### 15.3 Exactly-Once Logical Effects vs. At-Least-Once Delivery Semantics
+1. **Physical Delivery Semantics:** All transport and queue mechanics operate strictly under **at-least-once delivery semantics**.
+2. **Logical Effects Scope:** Exactly-once business effects are achieved **strictly within explicit idempotent transaction boundaries**:
+   - Internal state transitions: Enforced via PostgreSQL ACID conditional updates (`WHERE status = 'EXPECTED'`).
+   - External telephony & webhooks: Enforced via mandatory `idempotency_key` propagation and downstream deduplication tables.
+3. **Boundary Rule:** Anywhere outside these explicit boundaries, systems must assume at-least-once delivery and implement idempotent handlers.
