@@ -1,7 +1,7 @@
 # AVA Phase 4 Architecture Specification
 ## Security, Production Hardening & Scale
 
-**Document Version:** 1.0.2 (Incorporating Addendum v1.0.2-A)  
+**Document Version:** 1.0.2 (Incorporating Addenda v1.0.2-A & v1.0.2-B)  
 **Baseline Git Tag:** `phase3-accepted-frozen`  
 **Baseline Git Commit:** `59edf51`  
 **Status:** Under Final Architecture Review (Design-Only Milestone)  
@@ -564,3 +564,103 @@ This addendum formalizes the three focused resolutions approved during the final
    - Internal state transitions: Enforced via PostgreSQL ACID conditional updates (`WHERE status = 'EXPECTED'`).
    - External telephony & webhooks: Enforced via mandatory `idempotency_key` propagation and downstream deduplication tables.
 3. **Boundary Rule:** Anywhere outside these explicit boundaries, systems must assume at-least-once delivery and implement idempotent handlers.
+
+---
+
+## 16. Architecture Addendum v1.0.2-B: Final Architecture Closure & Protocol Resolution
+
+This addendum records the authoritative architecture closure decisions resolving vendor availability, cryptographic token concurrency, message delivery boundaries, and Git baseline verification prior to Phase 4 implementation authorization.
+
+### 16.1 Speech-Provider Boundary & Bank-Hosted Fallback Determination
+1. **Vendor Reality & Feasibility Status:**
+   - Vendor documentation confirms Sarvam Saaras containerized speech recognition exists for enterprise VPC / SageMaker deployments.
+   - However, for Town Bank, **no enterprise licensing, procurement contract, VPC subscription, or container registry access is currently provisioned or verified**.
+   - Consequently, Bank-Hosted Sarvam Saaras is formally designated as **Technically Feasible but Currently Unprovisioned and Unconfirmed**.
+2. **Approved Verified Alternative (Bank-Hosted Open-Weights ASR):**
+   - In accordance with the Bank-Controlled Boundary (Option A), Town Bank mandates an open-weights, self-hosted ASR engine running inside the bank's air-gapped private VPC:
+     - **Engine & Architecture:** Containerized **Faster-Whisper (`Whisper-large-v3-turbo` / `medium.en`)** or **NVIDIA NeMo Conformer-CTC** served via **Triton Inference Server**.
+     - **Target Hardware & Footprint:** NVIDIA A10G or L4 GPU (VRAM $\le 16\text{ GB}$).
+     - **Evaluation Acceptance Gates:**
+       1. Word Error Rate (WER) $\le 8.5\%$ on Town Bank banking domain test audio (Indian-accented English and regional terms).
+       2. Transcription latency $P_{95} \le 350\text{ ms}$ for real-time streaming speech chunks.
+       3. Pure permissive commercial license (MIT / Apache 2.0) with zero external network phone-home telemetry.
+3. **Customer PII / Voice Invariant:**
+   - External cloud speech processing (`api.sarvam.ai`) remains **PERMANENTLY DISABLED** for all real customer voice calls.
+   - Cloud speech APIs may be invoked exclusively within synthetic staging and developer sandbox environments using synthetic test data.
+
+### 16.2 Refresh-Token Concurrency Protocol: Encrypted Idempotent Response Envelope
+1. **Resolution of the SHA-256 Recovery Contradiction:**
+   - Storing only one-way `SHA-256(T_{n+1})` prevents a concurrent worker from reading or reconstructing the plaintext token $T_{n+1}$ to return to a legitimate concurrent browser request. Storing plaintext in the database would violate zero-plaintext token security invariants.
+   - To resolve this contradiction without storing plaintext tokens, the architecture adopts the **Encrypted Idempotent Rotation Response Envelope** protocol.
+2. **Protocol Specification:**
+   - **Client Request Contract:** Every refresh invocation must supply:
+     - The current refresh token $T_n$ in the HTTP-only, secure, `SameSite=Strict`, `Path=/api/v1/auth` cookie `__Host-ava_refresh_token`.
+     - A client-generated idempotency header: `X-Refresh-Request-ID: <UUIDv4>`, created once per client-side refresh attempt (shared across parallel in-flight tab requests).
+   - **Atomic Worker Execution:**
+     1. The worker hashes the incoming token: $H_n = \text{SHA-256}(T_n)$ and queries:
+        ```sql
+        SELECT * FROM refresh_tokens WHERE token_hash = :H_n FOR UPDATE;
+        ```
+     2. **State 1 — Token is ACTIVE (`status = 'ACTIVE'`):**
+        - Primary worker generates new refresh token $T_{n+1}$ and new access token $A_{n+1}$.
+        - Primary worker derives an ephemeral Rotation Response Key:
+          $$\text{RRK} = \text{HKDF-SHA256}(\text{ServerMasterKey}, \text{family\_id} \parallel \text{token\_id})$$
+        - Primary worker encrypts the response body `{"access_token": A_{n+1}, "refresh_token": T_{n+1}}` using AES-256-GCM with RRK, yielding `response_envelope_enc` and `envelope_tag`.
+        - Primary worker inserts $T_{n+1}$ record (`status = 'ACTIVE'`, `token_hash = SHA-256(T_{n+1})`).
+        - Primary worker updates $T_n$ record:
+          ```sql
+          UPDATE refresh_tokens SET
+            status = 'REPLACED',
+            replaced_at = NOW(),
+            replaced_by_hash = :H_{n+1},
+            request_id = :request_id,
+            response_envelope_enc = :envelope_enc,
+            envelope_tag = :tag,
+            envelope_expires_at = NOW() + INTERVAL '30 seconds'
+          WHERE id = :token_id;
+          ```
+        - Worker commits transaction, sets `__Host-ava_refresh_token` to $T_{n+1}$, and returns $A_{n+1}$.
+     3. **State 2 — Token is REPLACED within Grace Window (`status = 'REPLACED'` AND `NOW() <= envelope_expires_at`):**
+        - **Legitimate Race Condition:** If the incoming `X-Refresh-Request-ID` matches `record.request_id`:
+          - Worker decrypts `response_envelope_enc` using derived RRK and `envelope_tag`.
+          - Worker returns the exact cached response (`access_token` $A_{n+1}$, `refresh_token` $T_{n+1}$).
+          - Zero new database tokens are generated; no token family fork occurs.
+        - **Replay Attack / Desynchronized Client:** If `X-Refresh-Request-ID` differs from `record.request_id` or `envelope_expires_at` has elapsed:
+          - Fail-Safe Breach Detection: Worker immediately treats this as an active replay or token interception.
+          - Worker revokes all tokens in `family_id` (`status = 'REVOKED'`).
+          - Worker increments `users.token_version` in PostgreSQL.
+          - Worker emits PostgreSQL notification: `NOTIFY auth_revocations, '{"user_id": ..., "token_version": ...}'`.
+          - Worker emits high-priority security audit log: `SECURITY_ALERT: REFRESH_TOKEN_REPLAY_DETECTED`.
+          - Worker clears refresh cookies and returns `HTTP 401 Unauthorized`.
+3. **Multi-Worker In-Memory Cache Invalidation:**
+   - Each FastAPI worker maintains an in-process LRU cache of `(user_id, token_version)`.
+   - On database notification over `auth_revocations`, worker background tasks invalidate the local cache entry within $\le 5\text{ ms}$.
+   - Sub-millisecond JWT revocation remains an **Unverified Latency Target** ($P_{95} \le 5\text{ ms}$, $P_{99} \le 20\text{ ms}$). Actual latency will be measured under production benchmark load during Milestone 4.1.
+
+### 16.3 Outbox Delivery Guarantees & Transactional Boundaries
+1. **Physical Delivery Semantics:**
+   - Physical transport across outbox dispatchers, background workers, and queue processors is strictly **At-Least-Once**.
+   - Network retries, transient timeouts, and worker process restarts will produce duplicate message dispatches over the network.
+2. **Exactly-Once Logical Effects Scope:**
+   - Exactly-once business effects are achieved **EXCLUSIVELY within two explicit idempotent boundaries**:
+     - **Boundary 1 (Internal Domain State):** Enforced via PostgreSQL ACID conditional transitions (`UPDATE ... WHERE status = 'EXPECTED'`). Any duplicate delivery evaluates as a zero-row update and is safely acknowledged without duplicate state mutation.
+     - **Boundary 2 (Downstream Webhook & External API Integrations):** Enforced via mandatory `Idempotency-Key: <outbox_event_id>` header attached to outgoing payloads and recorded in downstream deduplication logs.
+3. **Crash Point Analysis:**
+   - *Crash Point A (Post-Dispatch / Pre-ACK):* Worker successfully dispatches message to downstream system, but crashes before updating `outbox_events.status = 'DISPATCHED'`. Recovery: Standby outbox worker re-dispatches message. Downstream deduplicates via `Idempotency-Key`.
+   - *Crash Point B (In-Flight Telephony Simulation):* In Phase 4, telephony dialing is simulated. Telephony dispatch events record execution in `dial_dispatch_log` with unique constraint on `(campaign_id, customer_id, attempt_number)`.
+   - Outside these two explicit boundaries, systems must strictly assume at-least-once delivery semantics.
+
+### 16.4 Git Tag Verification & Peel Commit History
+1. **Verified Repository Baseline Targets:**
+   - Inspection of both local repository references and remote (`origin`) peeled references confirms:
+     | Tag Name | Target Object Type | Peeled Commit Hash | Branch Anchor | Status |
+     | :--- | :--- | :--- | :--- | :--- |
+     | `phase3-accepted-frozen` | `tag` (annotated) | `59edf51366bcea5a9448f6cfc5f18d9cc983b19b` | `main` | Protected & Verified |
+     | `v0.3.0` | `tag` (annotated) | `59edf51366bcea5a9448f6cfc5f18d9cc983b19b` | `main` | Protected & Verified |
+     | `phase2-accepted-frozen` | `tag` (annotated) | `24ec5e039471f1c7e605864c438adb053d662e18` | `main` | Protected & Verified |
+     | `v0.2.0` | `tag` (annotated) | `24ec5e039471f1c7e605864c438adb053d662e18` | `main` | Protected & Verified |
+2. **Reconciliation of Historical Tag Discrepancies:**
+   - Commit `33bbe04` was the initial Phase 3 implementation baseline submitted for release audit.
+   - Following the release audit, remediation commit `59edf51` was authored to deliver Alembic migrations, telephone DND scrubbing, CSV sanitization, and deterministic test suites.
+   - Milestone tags `phase3-accepted-frozen` and `v0.3.0` were permanently anchored to `59edf51`. No tag divergence, displacement, or drift exists between local and remote environments.
+
