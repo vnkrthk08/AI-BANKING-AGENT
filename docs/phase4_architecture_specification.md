@@ -1,7 +1,7 @@
 # AVA Phase 4 Architecture Specification
 ## Security, Production Hardening & Scale
 
-**Document Version:** 1.0.2 (Incorporating Addenda v1.0.2-A & v1.0.2-B)  
+**Document Version:** 1.0.2 (Incorporating Addenda v1.0.2-A, v1.0.2-B & v1.0.2-C)  
 **Baseline Git Tag:** `phase3-accepted-frozen`  
 **Baseline Git Commit:** `59edf51`  
 **Status:** Under Final Architecture Review (Design-Only Milestone)  
@@ -594,7 +594,7 @@ This addendum records the authoritative architecture closure decisions resolving
    - To resolve this contradiction without storing plaintext tokens, the architecture adopts the **Encrypted Idempotent Rotation Response Envelope** protocol.
 2. **Protocol Specification:**
    - **Client Request Contract:** Every refresh invocation must supply:
-     - The current refresh token $T_n$ in the HTTP-only, secure, `SameSite=Strict`, `Path=/api/v1/auth` cookie `__Host-ava_refresh_token`.
+     - The current refresh token $T_n$ in the HTTP-only, secure, `SameSite=Strict`, `Path=/` cookie `__Host-ava_refresh_token` (with no `Domain` attribute).
      - A client-generated idempotency header: `X-Refresh-Request-ID: <UUIDv4>`, created once per client-side refresh attempt (shared across parallel in-flight tab requests).
    - **Atomic Worker Execution:**
      1. The worker hashes the incoming token: $H_n = \text{SHA-256}(T_n)$ and queries:
@@ -663,4 +663,89 @@ This addendum records the authoritative architecture closure decisions resolving
    - Commit `33bbe04` was the initial Phase 3 implementation baseline submitted for release audit.
    - Following the release audit, remediation commit `59edf51` was authored to deliver Alembic migrations, telephone DND scrubbing, CSV sanitization, and deterministic test suites.
    - Milestone tags `phase3-accepted-frozen` and `v0.3.0` were permanently anchored to `59edf51`. No tag divergence, displacement, or drift exists between local and remote environments.
+
+---
+
+## 17. Architecture Addendum v1.0.2-C: Final Implementation Readiness & Protocol Corrections
+
+This addendum formalizes the final protocol corrections and evidence clarifications required before Phase 4 implementation authorization.
+
+### 17.1 Refresh-Cookie Configuration Correction & RFC 6265bis Alignment
+1. **RFC 6265bis Prefix Requirement:**
+   - Under RFC 6265bis (§5.3), any cookie bearing the `__Host-` prefix MUST meet three strict browser-enforced constraints:
+     - It MUST have the `Secure` attribute.
+     - It MUST NOT have a `Domain` attribute (host-only binding).
+     - It MUST have the `Path` attribute set exactly to `/` (`Path=/`).
+   - Any attempt to set a subpath such as `Path=/api/v1/auth` causes modern compliant user agents to reject the `Set-Cookie` header outright.
+2. **Authoritative Cookie Specification:**
+   - **Cookie Name:** `__Host-ava_refresh_token`
+   - **Path:** `Path=/` (mandatory for `__Host-` compliance)
+   - **Security Attributes:** `Secure`, `HttpOnly`, `SameSite=Strict`
+   - **Domain Attribute:** **OMITTED / PROHIBITED**
+   - **Canonical `Set-Cookie` Header:**
+     ```http
+     Set-Cookie: __Host-ava_refresh_token=rt_019283aa...fe8; Path=/; Secure; HttpOnly; SameSite=Strict
+     ```
+3. **M4.1 Acceptance Test Agreement:**
+   - The test `test_cookie_host_prefix_compliance` explicitly verifies that responses issuing the refresh cookie emit the exact header attributes above, and asserts that setting any non-root `Path` or any `Domain` attribute raises a test failure.
+
+### 17.2 Resilient JWT Revocation-Cache Recovery & Fault Tolerance
+1. **State Recovery Protocol for Multi-Worker Environments:**
+   PostgreSQL `LISTEN/NOTIFY` provides transient, fire-and-forget notification without message queuing or durable buffering. To prevent split-brain authorization or acceptance of revoked JWTs during worker restarts, network partitions, or database reconnections, the following protocol is enforced:
+   - **Startup Synchronization:**
+     - Before a worker opens its readiness probe (`/health/ready` returning HTTP 200) to serve authenticated requests, it connects to PostgreSQL and fetches all active revocation watermarks:
+       ```sql
+       SELECT user_id, token_version, updated_at
+       FROM users
+       WHERE token_version > 0;
+       ```
+     - It pre-populates its in-memory LRU revocation cache and records `last_sync_timestamp = NOW()`.
+   - **Connection Loss & Reconnection Reconciliation:**
+     - If the connection drops or the notification loop encounters an error, the worker attempts exponential backoff reconnection.
+     - Upon establishing a new connection and executing `LISTEN auth_revocations`, the worker executes a delta reconciliation query:
+       ```sql
+       SELECT user_id, token_version, updated_at
+       FROM users
+       WHERE updated_at >= (:last_sync_timestamp - INTERVAL '10 seconds');
+       ```
+       (The 10-second margin compensates for transaction commit latency and inter-node clock skew).
+     - The worker updates in-memory cache entries and sets `last_sync_timestamp = NOW()`.
+   - **Bounded Cache Lifetime Policy:**
+     - All in-memory revocation cache entries have a strict maximum TTL of **60 seconds** (`MAX_CACHE_TTL = 60s`).
+     - Stale entries older than 60 seconds are revalidated against the database on the next token authentication attempt.
+   - **Strict Fail-Closed Behavior:**
+     - If PostgreSQL is unreachable and a requested user's revocation status cannot be verified from a fresh, unexpired cache entry, the worker **fails closed**.
+     - The worker refuses to validate the token, returning `HTTP 503 Service Unavailable` with `Retry-After: 5` (or `HTTP 401 Unauthorized` for expired credentials). It never assumes unverified tokens are valid.
+2. **Revocation Fault-Tolerance Acceptance Tests:**
+   - `test_revocation_cache_startup_sync`: Verifies worker pre-populates all user revocation watermarks from PostgreSQL prior to opening `/health/ready`.
+   - `test_revocation_channel_reconnect_reconciliation`: Simulates a severed notification channel, executes out-of-band user revocations in the DB, reconnects the channel, and asserts that the worker reconciles all missed revocations without restart.
+   - `test_revocation_fail_closed_on_db_outage`: Simulates total database partition with an expired or unpopulated cache; asserts protected endpoints return `503 Service Unavailable` / `401 Unauthorized` rather than allowing unverified access.
+   - `test_multi_worker_revocation_consistency`: Deploys 3 concurrent FastAPI worker instances. Triggers user revocation on Worker 1. Verifies that Workers 2 and 3 reject tokens for that user within the measured SLO.
+3. **Latency Objective as Measured SLO:**
+   - Sub-millisecond JWT rejection is treated as an **empirical SLO to be measured and validated during Milestone 4.1 load testing** ($P_{95} \le 5\text{ ms}$ for local in-memory LRU evaluation; $P_{99} \le 20\text{ ms}$ for end-to-end multi-worker notification propagation), not an unmeasured architectural guarantee.
+
+### 17.3 Speech-Provider Evidence & Air-Gapped Deployment Boundaries
+1. **Public Documentation & Vendor Reality:**
+   - Authoritative vendor documentation confirms that **Saaras v3** is available for containerized deployment on AWS SageMaker via AWS Marketplace.
+   - However, **Saaras v4** is publicly documented and available solely as a managed public cloud API (`api.sarvam.ai`).
+   - There is **no publicly available evidence or Town Bank contract** establishing that Saaras v4 is available as an enterprise container, via AWS Marketplace, or for self-hosted VPC deployment.
+   - Furthermore, Town Bank possesses no enterprise agreement, licensing terms, VPC container entitlement, networking specification, data retention DPA, or enterprise support SLA for Sarvam.
+   - **Formal Designation:** Saaras v4 VPC / on-premises deployment is formally recorded as **UNCONFIRMED, UNLICENSED, AND UNPROVISIONED**.
+2. **Private Cloud vs. Air-Gapped On-Premises Distinction:**
+   - **Network-Isolated Private Cloud Deployment:** An AWS SageMaker VPC endpoint with disabled internet route tables located in Town Bank's AWS account. This still executes on shared cloud hypervisors and relies on cloud infrastructure.
+   - **Genuinely Air-Gapped On-Premises Deployment:** Dedicated physical server hardware located within Town Bank's private data center with zero cloud connection, zero WAN egress, and zero external licensing phone-home requirements.
+3. **Operational Boundary Invariant:**
+   - External cloud speech processing (`api.sarvam.ai`) remains **PERMANENTLY DISABLED** for all real customer voice calls until formal architecture approval and signed CISO authorization are in place.
+   - The primary approved bank-controlled speech engine for real customer calls is the containerized open-weights architecture:
+     - **Faster-Whisper (`Whisper-large-v3-turbo` / `medium.en`)** or **NVIDIA NeMo Conformer-CTC** running on Triton Inference Server within Town Bank's private air-gapped infrastructure.
+   - Cloud Saaras APIs may be used solely in development/mock testing environments with synthetic data.
+
+### 17.4 Outstanding Bank Governance Sign-Offs Inventory
+Prior to deploying Phase 4 into production, the following formal sign-offs are required:
+1. **Bank CISO & Data Privacy:** Formal approval selecting either the air-gapped Faster-Whisper / Triton ASR deployment or executing a cloud DPA exception with zero data retention.
+2. **Bank Legal & Compliance:** Regulatory approval of TCCCPR calling windows, campaign categories (Service vs Promotional), and customer opt-out precedence.
+3. **Bank IT & SecOps:** KMS Key Custody Agreement defining HSM ownership (Cloud KMS vs on-premises Thales Luna HSM).
+4. **Bank Operations:** Formal approval of the 180-day audit retention policy vs. the 3-year financial dispute legal hold.
+5. **Telephony Carrier:** Formal procurement of 140-series CLI blocks and enterprise DLT header registration.
+
 
