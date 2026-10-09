@@ -193,6 +193,27 @@ def create_app(repository: KuralRepository | None = None,
             await websocket.close(code=1008, reason="Policy Violation: ticket invalid or already consumed")
             return
 
+        from kural.policy.calling_policy import CallingPolicyEngine
+        is_real_customer = False
+        repo = getattr(websocket.app.state, "repository", None)
+        if repo:
+            sess_obj = repo.get_session(session_id)
+            if sess_obj and sess_obj.customer_ref and not (sess_obj.customer_ref.startswith("demo-") or sess_obj.customer_ref.startswith("test-")):
+                is_real_customer = True
+
+        stt_provider = getattr(websocket.app.state, "stt_provider", None)
+        stt_type = getattr(stt_provider, "provider_type", "external_cloud")
+        is_certified = getattr(stt_provider, "is_on_premise_certified", False)
+        try:
+            CallingPolicyEngine.validate_speech_processing_boundary(
+                is_real_customer_session=is_real_customer,
+                stt_provider_type=stt_type,
+                is_on_premise_certified=is_certified,
+            )
+        except PermissionError as pe:
+            await websocket.close(code=1008, reason=str(pe))
+            return
+
         await websocket.accept()
         await websocket.send_json({"type": "session_connected", "session_id": session_id})
         try:

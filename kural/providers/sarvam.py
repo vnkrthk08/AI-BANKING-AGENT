@@ -18,6 +18,8 @@ class SarvamConfigurationError(RuntimeError):
 
 
 class SarvamSTTAdapter:
+    provider_type = "external_cloud"
+    is_on_premise_certified = False
     model_name = "saaras:v4"
     mode = "transcribe"
 
@@ -79,6 +81,8 @@ class SarvamRealtimeSTTSession:
 class SarvamRealtimeSTTAdapter:
     """Realtime Saaras adapter; credentials and SDK types stay server-side."""
 
+    provider_type = "external_cloud"
+    is_on_premise_certified = False
     model_name = "saaras:v4"
     language_code = "en-IN"
 
