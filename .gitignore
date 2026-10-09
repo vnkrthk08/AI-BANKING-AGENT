@@ -40,6 +40,7 @@ htmlcov/
 *.sqlite
 *.sqlite3
 kural_local.db
+storage/
 
 # Secrets & Environment Variables
 .env
@@ -64,3 +65,4 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+*.bak

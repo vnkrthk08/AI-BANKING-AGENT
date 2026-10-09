@@ -109,8 +109,8 @@ class RealtimeVoiceOrchestrator:
                 try:
                     from kural.services.recording_service import save_pcm_to_wav
                     save_pcm_to_wav(self._session_id, bytes(self._pcm_buffer))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to persist call WAV recording for session %s: %s", self._session_id, exc)
             try:
                 db = getattr(self.repository, "database", None)
                 if db is not None:
@@ -123,8 +123,8 @@ class RealtimeVoiceOrchestrator:
                             cr.recording_available = True
                             cr.status = "COMPLETED"
                             s.commit()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to finalize call record duration for session %s: %s", self._session_id, exc)
 
     async def _read_microphone(self, call_started: float) -> None:
         while not self._closed.is_set():

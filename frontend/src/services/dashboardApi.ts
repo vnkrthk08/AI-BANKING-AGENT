@@ -31,10 +31,18 @@ function writeStored(key: string, value: unknown): void {
 }
 
 function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  return fetch(path, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } }).then(async (response) => {
-    if (!response.ok) throw new Error(`Operations API ${response.status} at ${path}`);
-    return response.json() as Promise<T>;
-  });
+  return fetch(path, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`Operations API returned ${response.status} at ${path}`);
+      return response.json() as Promise<T>;
+    })
+    .catch((err: unknown) => {
+      if (err instanceof Error) {
+        if (err.message.startsWith("Operations API")) throw err;
+        throw new Error(`Failed to reach AVA backend at ${path} (${err.message}). Verify FastAPI server is running on port 8000.`);
+      }
+      throw new Error(`Failed to reach AVA backend at ${path}`);
+    });
 }
 
 const mockApi: DashboardApi = {

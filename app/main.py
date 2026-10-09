@@ -1,9 +1,12 @@
 """FastAPI application entry point and dependency composition."""
 
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+
+logger = logging.getLogger("kural.workers")
 
 from kural.api import dashboard_router, router
 from kural.api_operations import operations_router
@@ -61,8 +64,8 @@ def create_app(repository: KuralRepository | None = None,
                                 s.commit()
                 except asyncio.CancelledError:
                     break
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Callback scheduler worker encountered transient error: %s", exc)
 
         async def campaign_pacing_worker():
             """Polls active campaigns and processes queued contacts in background."""
@@ -85,8 +88,8 @@ def create_app(repository: KuralRepository | None = None,
                                 })
                 except asyncio.CancelledError:
                     break
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Campaign pacing worker encountered transient error: %s", exc)
 
         cb_task = asyncio.create_task(callback_scheduler_worker())
         camp_task = asyncio.create_task(campaign_pacing_worker())
