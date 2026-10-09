@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import logging
 
 from fastapi import FastAPI, HTTPException, WebSocket
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
 logger = logging.getLogger("kural.workers")
 
@@ -172,6 +172,14 @@ def create_app(repository: KuralRepository | None = None,
         if not revocation_cache.is_ready:
             raise HTTPException(status_code=503, detail="Service not ready: revocation cache synchronizing")
         return {"status": "ready"}
+
+    @app.get("/metrics", response_class=PlainTextResponse, tags=["observability"])
+    def prometheus_metrics() -> PlainTextResponse:
+        from kural.telemetry.metrics import metrics_registry
+        return PlainTextResponse(
+            content=metrics_registry.render_prometheus(),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
 
     @app.websocket("/ws/voice/{session_id}")
     async def ws_voice_session(websocket: WebSocket, session_id: str) -> None:

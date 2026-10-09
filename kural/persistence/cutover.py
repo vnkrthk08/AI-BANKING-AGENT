@@ -38,8 +38,12 @@ class DatabaseCutoverManager:
         hasher = hashlib.sha256()
         row_count = 0
 
+        table = Base.metadata.tables.get(table_name)
+        if table is None:
+            raise ValueError(f"Unknown table for hash calculation: {table_name}")
+
         with db.session() as s:
-            result = s.execute(text(f"SELECT * FROM {table_name}"))
+            result = s.execute(select(table))
             # Fetch column keys and rows
             keys = list(result.keys())
             rows = result.fetchall()
@@ -60,8 +64,12 @@ class DatabaseCutoverManager:
 
     def pump_table_data(self, table_name: str) -> int:
         """Pump rows from source table into target table."""
+        table = Base.metadata.tables.get(table_name)
+        if table is None:
+            raise ValueError(f"Unknown table for data pump: {table_name}")
+
         with self.source_db.session() as src_sess:
-            result = src_sess.execute(text(f"SELECT * FROM {table_name}"))
+            result = src_sess.execute(select(table))
             keys = list(result.keys())
             rows = result.fetchall()
 
@@ -71,10 +79,7 @@ class DatabaseCutoverManager:
             with self.target_db.session() as tgt_sess:
                 for row in rows:
                     row_dict = {keys[i]: row[i] for i in range(len(keys))}
-                    cols = ", ".join(row_dict.keys())
-                    placeholders = ", ".join([f":{k}" for k in row_dict.keys()])
-                    stmt = text(f"INSERT INTO {table_name} ({cols}) VALUES ({placeholders})")
-                    tgt_sess.execute(stmt, row_dict)
+                    tgt_sess.execute(table.insert().values(row_dict))
                 tgt_sess.commit()
 
         return len(rows)
