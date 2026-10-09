@@ -14,6 +14,13 @@ from kural.persistence.models import CallRecordRow, ConversationTurnRow, Session
 from kural.services.recording_service import ensure_recording_exists, get_recording_path, redact_pii
 
 
+def sanitize_csv_value(val: Any) -> Any:
+    """Escapes leading spreadsheet formula symbols to prevent CSV injection."""
+    if isinstance(val, str) and val.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return f"'{val}"
+    return val
+
+
 class CallService:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -185,7 +192,7 @@ class CallService:
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
         for c in calls:
-            row = {k: c.get(k, "") for k in fieldnames}
+            row = {k: sanitize_csv_value(c.get(k, "")) for k in fieldnames}
             writer.writerow(row)
         return output.getvalue()
 

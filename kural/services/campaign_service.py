@@ -174,7 +174,9 @@ class CampaignService:
             return [self._serialize_contact(c) for c in s.scalars(q).all()]
 
     def get_queued_contacts(self, campaign_id: str, batch_size: int = 5) -> list[dict[str, Any]]:
-        """Retrieves dialable contacts: PENDING, QUEUED, or RETRY_SCHEDULED where retry time has elapsed."""
+        """Retrieves dialable contacts: PENDING, QUEUED, or RETRY_SCHEDULED where retry time has elapsed.
+        Applies pre-dispatch DND scrubbing against Customer records before queueing.
+        """
         now = datetime.now(timezone.utc)
         with self.database.session() as s:
             q = (
@@ -187,13 +189,22 @@ class CampaignService:
                         & (CampaignContactRow.next_attempt_at <= now)
                     ),
                 )
-                .limit(batch_size)
+                .order_by(CampaignContactRow.created_at.asc())
             )
-            rows = s.scalars(q).all()
-            for r in rows:
-                r.status = "QUEUED"
+            candidates = s.scalars(q).all()
+            dialable: list[CampaignContactRow] = []
+            for r in candidates:
+                cust = s.get(CustomerRow, r.customer_ref)
+                if cust and cust.dnd_status:
+                    r.status = "DND_EXCLUDED"
+                    r.next_attempt_at = None
+                else:
+                    r.status = "QUEUED"
+                    dialable.append(r)
+                    if len(dialable) >= batch_size:
+                        break
             s.commit()
-            return [self._serialize_contact(r) for r in rows]
+            return [self._serialize_contact(r) for r in dialable]
 
     def record_attempt(
         self,

@@ -7,11 +7,18 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from kural.persistence.database import Database
-from kural.persistence.models import CustomerRow
+from kural.persistence.models import CampaignContactRow, CustomerRow
+
+
+def sanitize_csv_value(val: Any) -> Any:
+    """Escapes leading spreadsheet formula symbols to prevent CSV injection."""
+    if isinstance(val, str) and val.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return f"'{val}"
+    return val
 
 
 def normalize_indian_phone(phone_raw: str) -> str:
@@ -70,6 +77,15 @@ class CustomerService:
                 existing.region = region
                 existing.assigned_agent_id = assigned_agent_id or existing.assigned_agent_id
                 existing.updated_at = now
+                if dnd_status:
+                    s.execute(
+                        update(CampaignContactRow)
+                        .where(
+                            CampaignContactRow.customer_ref == existing.customer_ref,
+                            CampaignContactRow.status.in_(["PENDING", "QUEUED", "RETRY_SCHEDULED"]),
+                        )
+                        .values(status="DND_EXCLUDED", next_attempt_at=None)
+                    )
                 s.commit()
                 return self._serialize_customer(existing)
 
@@ -90,6 +106,15 @@ class CustomerService:
                 updated_at=now,
             )
             s.add(row)
+            if dnd_status:
+                s.execute(
+                    update(CampaignContactRow)
+                    .where(
+                        CampaignContactRow.customer_ref == ref,
+                        CampaignContactRow.status.in_(["PENDING", "QUEUED", "RETRY_SCHEDULED"]),
+                    )
+                    .values(status="DND_EXCLUDED", next_attempt_at=None)
+                )
             s.commit()
             return self._serialize_customer(row)
 
@@ -216,7 +241,7 @@ class CustomerService:
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
         for c in customers:
-            row = {k: c.get(k, "") for k in fieldnames}
+            row = {k: sanitize_csv_value(c.get(k, "")) for k in fieldnames}
             writer.writerow(row)
         return output.getvalue()
 
