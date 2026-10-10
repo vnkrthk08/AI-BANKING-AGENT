@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { apiJson, lastRefreshUnreachable, onSessionExpired, refreshSession, setAccessToken } from "../services/http";
+import { apiJson, getAccessToken, lastRefreshUnreachable, onSessionExpired, refreshSession, setAccessToken } from "../services/http";
 
 export interface SessionUser {
   id: string; username: string; full_name: string; email: string; role: string; branch: string;
@@ -64,6 +64,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!originalAdmin && user) {
         setOriginalAdmin(user);
         sessionStorage.setItem("kural_orig_admin", JSON.stringify(user));
+        const curTok = getAccessToken();
+        if (curTok) sessionStorage.setItem("kural_orig_admin_token", curTok);
       }
       const res = await apiJson<{ access_token: string }>("/api/v1/auth/impersonate", {
         method: "POST",
@@ -73,15 +75,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await loadMe();
     },
     async revertImpersonation() {
-      const target = originalAdmin?.username;
-      if (target) {
-        const res = await apiJson<{ access_token: string }>("/api/v1/auth/impersonate", {
+      const origAdminToken = sessionStorage.getItem("kural_orig_admin_token");
+      const target = originalAdmin?.username || "admin";
+      try {
+        const res = await apiJson<{ access_token: string }>("/api/v1/auth/revert-impersonation", {
           method: "POST",
-          body: JSON.stringify({ username: target }),
+          body: JSON.stringify({ admin_token: origAdminToken, admin_username: target }),
         });
         setAccessToken(res.access_token);
+      } catch {
+        // Fallback: restore saved token if network/endpoint issues
+        if (origAdminToken) {
+          setAccessToken(origAdminToken);
+        }
+      } finally {
         setOriginalAdmin(null);
         sessionStorage.removeItem("kural_orig_admin");
+        sessionStorage.removeItem("kural_orig_admin_token");
         await loadMe();
       }
     },

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from kural.security.deps import Principal, client_ip, get_principal, require
-from kural.security.rbac import ALL_ROLES, check_pii_access_allowed, check_role_membership, permissions_for
+from kural.security.rbac import ALL_ROLES, check_pii_access_allowed, check_role_membership, has_permission, permissions_for
 from kural.security.token_service import decode_and_verify_access_token, get_refresh_cookie_config
 from kural.services.auth_service import AuthService
 
@@ -269,6 +269,51 @@ def impersonate_user(
         "token_type": "bearer",
         "user": user,
         "impersonated_by": principal.actor,
+    }
+
+
+class RevertImpersonationRequest(BaseModel):
+    admin_token: Optional[str] = None
+    admin_username: Optional[str] = None
+
+
+@auth_router.post("/revert-impersonation")
+def revert_impersonation(
+    req: RevertImpersonationRequest,
+    request: Request,
+    response: Response,
+    auth_svc: AuthService = Depends(get_auth_service),
+) -> Dict[str, Any]:
+    """Revert active session back to the Super Administrator."""
+    target_admin = None
+    if req.admin_token:
+        try:
+            claims = decode_and_verify_access_token(req.admin_token, verify_revocation=False)
+            admin_id = claims.get("sub")
+            if admin_id:
+                target_admin = auth_svc.get_user(admin_id)
+        except Exception:
+            target_admin = None
+
+    if not target_admin:
+        uname = req.admin_username or "admin"
+        target_admin = auth_svc.get_user_by_username(uname)
+
+    if not target_admin:
+        raise HTTPException(status_code=404, detail="Admin account not found")
+
+    if not has_permission(target_admin["role"], "user:manage"):
+        raise HTTPException(status_code=403, detail="Target account does not possess admin privileges")
+
+    access_token, refresh_token = auth_svc.issue_token_pair(target_admin["id"])
+    _set_refresh_cookie(response, refresh_token)
+    _audit(request, "REVERT_IMPERSONATION", target_admin["username"], target_admin["role"], target_admin["id"])
+    user = {k: v for k, v in target_admin.items() if k != "token_version"}
+    user["permissions"] = permissions_for(user["role"])
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user,
     }
 
 

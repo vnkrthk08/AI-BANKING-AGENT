@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactElement } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Bell,
   ChartBar,
@@ -94,6 +94,7 @@ export function AppShell() {
   const [role] = useRole();
   const { user, logout, isImpersonating, revertImpersonation, originalAdmin } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const [navOpen, setNavOpen] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [dark, setDark] = useState(() => { try { return localStorage.getItem("kural-theme") === "dark"; } catch { return false; } });
@@ -169,7 +170,10 @@ export function AppShell() {
               </div>
               <button
                 className="btn sm secondary revert-btn"
-                onClick={() => void revertImpersonation()}
+                onClick={async () => {
+                  await revertImpersonation();
+                  navigate("/admin");
+                }}
                 title="Exit to Super Admin"
               >
                 ⬅ Return to Super Admin ({originalAdmin?.full_name || "Admin"})

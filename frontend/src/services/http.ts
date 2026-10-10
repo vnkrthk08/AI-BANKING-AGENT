@@ -6,6 +6,7 @@ export let lastRefreshUnreachable = false;
 const listeners = new Set<() => void>();
 
 export function setAccessToken(token: string | null): void { accessToken = token; }
+export function getAccessToken(): string | null { return accessToken; }
 export function onSessionExpired(fn: () => void): () => void { listeners.add(fn); return () => listeners.delete(fn); }
 
 export class ApiError extends Error {
