@@ -41,12 +41,12 @@ button { font: inherit; }
 /* ---------- Shell ---------- */
 .app { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); min-height: 100vh; }
 .side { position: sticky; top: 0; height: 100vh; background: #0b1b31; color: #c9d4e5; display: flex; flex-direction: column; padding: 16px 12px; gap: 4px; }
-.side-brand { display: flex; align-items: center; gap: 12px; padding: 6px 8px 22px; color: #fff; }
+.side-brand { display: flex; align-items: center; gap: 14px; padding: 10px 10px 24px; color: #fff; }
 .side-mark { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg,#2563eb,#0ea5e9); display: grid; place-items: center; font-weight: 800; font-size: 14px; }
-.side-logo-img { width: 44px; height: 44px; border-radius: 11px; object-fit: cover; display: block; box-shadow: 0 4px 14px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.12); background: #fff; flex-shrink: 0; transition: transform 0.2s ease, box-shadow 0.2s ease; }
-.side-logo-img:hover { transform: scale(1.05); box-shadow: 0 6px 18px rgba(14, 165, 233, 0.4), 0 0 0 1px rgba(56, 189, 248, 0.3); }
-.side-brand b { display: block; font-size: 15.5px; font-weight: 800; letter-spacing: .03em; line-height: 1.2; }
-.side-brand small { display: block; font-size: 11.5px; color: #94a3b8; font-weight: 500; margin-top: 2px; }
+.side-logo-img { width: 52px; height: 52px; border-radius: 13px; object-fit: contain; display: block; box-shadow: 0 4px 18px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.08); background: transparent; flex-shrink: 0; transition: transform 0.2s ease, box-shadow 0.2s ease; }
+.side-logo-img:hover { transform: scale(1.06); box-shadow: 0 6px 20px rgba(14, 165, 233, 0.4), 0 0 0 1px rgba(56, 189, 248, 0.3); }
+.side-brand b { display: block; font-size: 17px; font-weight: 800; letter-spacing: .03em; line-height: 1.2; color: #fff; }
+.side-brand small { display: block; font-size: 12px; color: #94a3b8; font-weight: 500; margin-top: 3px; }
 .side-label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #8495b3; padding: 14px 10px 6px; }
 .nav-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: #c9d4e5; font-weight: 500; }
 .nav-item:hover { background: rgba(255,255,255,.06); color: #fff; }
@@ -216,10 +216,10 @@ table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 3px;
-  border-radius: 20px;
-  background: linear-gradient(135deg, rgba(14, 165, 233, 0.4), rgba(59, 130, 246, 0.5), rgba(99, 102, 241, 0.3));
-  box-shadow: 0 10px 28px -4px rgba(37, 99, 235, 0.35), 0 0 35px rgba(14, 165, 233, 0.3);
+  padding: 4px;
+  border-radius: 23px;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.45), rgba(59, 130, 246, 0.55), rgba(99, 102, 241, 0.35));
+  box-shadow: 0 12px 32px -4px rgba(37, 99, 235, 0.4), 0 0 35px rgba(14, 165, 233, 0.35);
   animation: logoAuraPulse 4s ease-in-out infinite;
   transition: transform 0.3s ease, box-shadow 0.3s ease;
 }
@@ -238,20 +238,20 @@ table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
   }
 }
 .login-logo-big {
-  width: 68px;
-  height: 68px;
-  border-radius: 17px;
-  object-fit: cover;
+  width: 82px;
+  height: 82px;
+  border-radius: 19px;
+  object-fit: contain;
   display: block;
-  background: #fff;
+  background: transparent;
 }
 .login-brand-title {
   display: block;
-  font-size: 21px;
+  font-size: 23px;
   font-weight: 800;
   letter-spacing: .06em;
   color: #0b1b31;
-  margin-top: 12px;
+  margin-top: 14px;
   text-transform: uppercase;
   background: linear-gradient(135deg, #0b1b31 30%, #1e40af 100%);
   -webkit-background-clip: text;
@@ -259,12 +259,12 @@ table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
 }
 .login-brand-subtitle {
   display: block;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
   letter-spacing: .08em;
   text-transform: uppercase;
   color: #64748b;
-  margin-top: 2px;
+  margin-top: 3px;
 }
 
 .login-card h1 { margin: 0; font-size: 20px; font-weight: 700; text-align: center; color: #0f172a; }
