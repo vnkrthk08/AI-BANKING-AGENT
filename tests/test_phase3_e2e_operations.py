@@ -150,10 +150,11 @@ Smita Sen,9876543291,Bengali,NOT_INSTALLED,1,Kolkata East,East
     cb_id = cb_data["id"]
     assert cb_data["status"] == "SCHEDULED"
 
-    # Reschedule callback to earlier
-    earlier_utc = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    # Reschedule callback to next permitted slot
+    from kural.policy.calling_policy import next_permitted_slot
+    valid_resched_utc = next_permitted_slot(datetime.now(timezone.utc), hour=11).isoformat()
     resched_resp = client.post(f"/api/callbacks/{cb_id}/reschedule", json={
-        "scheduled_at_utc": earlier_utc,
+        "scheduled_at_utc": valid_resched_utc,
         "actor": "STAFF",
     })
     assert resched_resp.status_code == 200

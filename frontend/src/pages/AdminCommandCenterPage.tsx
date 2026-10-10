@@ -2,12 +2,12 @@ import { useState } from "react";
 import {
   CheckCircle,
   Copy,
+  Database,
   Eye,
   Lock,
   MagnifyingGlass,
   ShieldCheck,
   SlidersHorizontal,
-  Sparkle,
   Trash,
   UsersThree,
 } from "@phosphor-icons/react";
@@ -197,7 +197,7 @@ export function AdminCommandCenterPage() {
           <div className="admin-title-row">
             <h1>Platform Administration & User Directory</h1>
             <span className="presentation-badge">
-              <Sparkle size={14} weight="fill" /> Presentation Command Center
+              <ShieldCheck size={14} weight="fill" /> Presentation Command Center
             </span>
           </div>
           <p className="admin-subtitle">
@@ -251,7 +251,7 @@ export function AdminCommandCenterPage() {
             disabled={seeding}
             onClick={handleSeedDemoData}
           >
-            <Sparkle size={16} weight="fill" />
+            <Database size={16} />
             {seeding ? "Populating Fixtures…" : "Populate Demo Data"}
           </button>
           <button

@@ -165,7 +165,8 @@ def test_customer_stated_time_is_scheduled_and_read_back(db):
         assert cb["raw_status"] == "REQUESTED" and "agree a convenient time" in turn.response
 
 
-def test_webhook_auth_dedupe_and_out_of_order(tmp_path, sandbox_dialing):
+def test_webhook_auth_dedupe_and_out_of_order(tmp_path, sandbox_dialing, monkeypatch):
+    monkeypatch.setattr("kural.telephony.router.is_within_calling_hours", lambda dt: True)
     provider = sandbox_dialing("9844444444")
     repo = SqlAlchemyKuralRepository(Database(f"sqlite:///{(tmp_path / 'wh.db').as_posix()}"))
     with TestClient(create_app(repository=repo)) as client:
