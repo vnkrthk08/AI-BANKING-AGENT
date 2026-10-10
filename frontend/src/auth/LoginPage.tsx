@@ -19,8 +19,12 @@ export function LoginPage() {
   return (
     <main className="login-shell">
       <form className="login-card" onSubmit={submit} aria-labelledby="login-title">
-        <div className="login-brand">
-          <img src="/logo-horizontal.png" alt="AVA Banking Demo" className="login-logo-banner" />
+        <div className="login-brand-center">
+          <div className="login-logo-glow-wrapper">
+            <img src="/logo.png" alt="KURAL AVA Logo" className="login-logo-big" />
+          </div>
+          <span className="login-brand-title">KURAL AVA</span>
+          <span className="login-brand-subtitle">AI Voice Banking Operations</span>
         </div>
         <h1 id="login-title">Sign in to Operations</h1>
         <p className="login-sub">Use the account issued by your bank administrator.</p>
