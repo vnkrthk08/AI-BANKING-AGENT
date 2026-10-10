@@ -1,27 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  ArrowCounterClockwise,
-  CheckCircle,
-  Clock,
-  Hand,
-  Lock,
-  Microphone,
-  MicrophoneSlash,
-  PaperPlaneRight,
-  Phone,
-  PhoneDisconnect,
-  ShieldCheck,
-  SlidersHorizontal,
-  Sparkle,
-  UserCircle,
-  Waveform,
-  X,
-} from "@phosphor-icons/react";
+import { HandPalm, Microphone, MicrophoneSlash, Phone, PhoneDisconnect } from "@phosphor-icons/react";
 import { apiJson } from "../services/http";
 import { kuralApi } from "../services/kuralApi";
 import type { RealtimeVoiceConnection } from "../services/kuralApi";
 import type { PolicyDecision, TranscriptMessage, VoiceState } from "../types";
-import "../voice-agent.css";
 
 const TIMING_LABELS: Record<string, string> = {
   mic_capture_started: "Microphone capture",
@@ -890,683 +872,132 @@ export function TestConsolePage() {
     ? intent === "NO_RESPONSE" ? "ENDED (NO RESPONSE)" : "CALL ENDED"
     : "READY";
 
+  const live = connected && !callEnded;
+  const stateMeta: Record<VoiceState, { label: string; hint: string; tone: string }> = {
+    READY: { label: callEnded ? "Call ended" : "Ready to call", hint: callEnded ? `Duration ${formatDuration(finalDuration)}` : "Subbu will open with the bank's approved disclosure", tone: "" },
+    LISTENING: { label: isMuted ? "Microphone muted" : "Listening", hint: isMuted ? "Unmute to let the customer speak" : "Speak naturally — you can interrupt Subbu at any time", tone: isMuted ? "warn" : "live" },
+    PROCESSING: { label: "Thinking", hint: "KURAL is checking policy and choosing an approved reply", tone: "live" },
+    SPEAKING: { label: "Subbu is speaking", hint: "Start talking to interrupt", tone: "live" },
+    INTERRUPTED: { label: "Interrupted", hint: "Listening to the customer", tone: "live" },
+    SILENCE_REMINDER: { label: "Checking in", hint: "No response heard — Subbu is prompting the customer", tone: "warn" },
+    TERMINATING: { label: "Ending call", hint: "Closing politely", tone: "warn" },
+    ENDED: { label: "Call ended", hint: `Duration ${formatDuration(finalDuration)}`, tone: "" },
+  };
+  const meta = error && !live ? { label: "Call could not start", hint: "See the message below", tone: "bad" } : stateMeta[voiceState];
+  const level = Math.min(1, audioEnergy * 4);
+  const orbClass = voiceState === "SPEAKING" ? "speaking" : live ? "" : "idle";
+  const lat = telemetryHistory.map((t) => t.stages.total_turn_response_ms).filter((n) => n > 0);
+  const pct = calculatePercentiles(lat);
+  void TIMING_LABELS; void statusLabel; void playingVoice; void playVoiceSample; void secondaryQuestion; void timings; void resetNotice; void handleResetDemo;
+
   return (
-    <div className="voice-agent-root">
-      <div className="voice-agent-container">
-        {/* ==================================================================
-            1. MINIMAL TOP BAR
-            ================================================================== */}
-        <header className="voice-topbar">
-          <div className="voice-brand-pill">
-            <div className="voice-brand-logo">TB</div>
-            <div className="voice-brand-title">
-              <strong>Town Bank · Outbound Voice Officer</strong>
-              <span>KURAL Real-time Orchestration Engine · Subbu Voice</span>
-            </div>
-          </div>
-
-          <div className="voice-topbar-controls">
-            {/* Backend connectivity indicator */}
-            <span style={{ fontSize: "11px", color: online ? "#34d399" : "#f87171", fontWeight: 600 }}>
-              {online ? "● API reachable" : "● API unreachable"}
-            </span>
-
-            {/* Live call status badge */}
-            <div className={`voice-call-status-badge ${connected ? "is-live" : callEnded ? "is-ended" : ""}`}>
-              {connected && <span className="live-pulse-dot" />}
-              <span>{statusLabel}</span>
-            </div>
-
-            {/* Call duration timer */}
-            {connected && <div className="voice-timer">{formatDuration(callDuration)}</div>}
-
-            {/* Engineering Diagnostics Drawer toggle button */}
-            <button
-              className="developer-toggle"
-              style={{ padding: "6px 12px", fontSize: "11px" }}
-              onClick={() => setShowDiagnostics((prev) => !prev)}
-              aria-label="Toggle engineering diagnostics drawer"
-            >
-              <SlidersHorizontal size={14} />
-              <span>Diagnostics</span>
+    <>
+      <div className="page-head" style={{ marginBottom: 16 }}>
+        <div><h1>Voice Studio</h1><p>Place a supervised browser call with Subbu. KURAL decides every reply; the AI only interprets speech.</p></div>
+        <div className="actions"><span className={`badge ${online ? "ok" : "bad"}`}>{online ? "API reachable" : "API unreachable"}</span></div>
+      </div>
+      <div className="studio">
+        <section className="stage" aria-label="Call">
+          <div className="stage-top">
+            <button className="cust-chip" onClick={() => !live && setShowCustomerPicker((v) => !v)} disabled={live} aria-expanded={showCustomerPicker}>
+              <span className="avatar" style={{ background: "rgba(255,255,255,.1)", color: "#fff" }}>{(customerInfo.name || "?").slice(0, 1)}</span>
+              <span style={{ minWidth: 0 }}><b>{customerInfo.name || "Select a customer"}</b><span>{customerInfo.customerRef ? `${customerInfo.customerRef} · ${customerInfo.phone} · ${customerInfo.language}` : customersError ?? "Choose who Subbu is calling"}</span></span>
             </button>
-
-            {/* Reset button */}
-            <button
-              className="reset-demo-btn"
-              onClick={() => void handleResetDemo()}
-              title="Reset session and telephony cache"
-            >
-              <ArrowCounterClockwise size={13} /> New session
-            </button>
+            <span className={`state-pill ${meta.tone}`}><i />{live ? formatDuration(callDuration) : meta.tone === "bad" ? "Not connected" : "Idle"}</span>
           </div>
-        </header>
-
-        {/* Global notification banners */}
-        {resetNotice && (
-          <div style={{ background: "rgba(16, 185, 129, 0.2)", border: "1px solid #10b981", color: "#a7f3d0", padding: "10px 16px", borderRadius: 12, fontSize: "12px", display: "flex", alignItems: "center", gap: "8px" }}>
-            <CheckCircle size={16} weight="fill" />
-            <span>{resetNotice}</span>
-          </div>
-        )}
-
-        {error && (
-          <div className="error-banner" role="alert" style={{ margin: 0, borderRadius: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px" }}>
-            <div>
-              <strong>Voice Notification:</strong> {error}
+          {showCustomerPicker && !live && (
+            <div style={{ width: "100%", marginTop: 12, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, maxHeight: 220, overflow: "auto" }}>
+              {availableCustomers.length === 0 ? <p style={{ padding: 14, margin: 0, color: "#8ea0bd" }}>{customersError ?? "No customers registered. Add customers in Calls → Customers."}</p> :
+                availableCustomers.map((cust) => { const c = cust as Record<string, string>; return (
+                  <button key={c.customer_ref} className="cust-chip" style={{ width: "100%", border: 0, borderRadius: 0, background: c.customer_ref === customerInfo.customerRef ? "rgba(96,145,255,.18)" : "transparent" }}
+                    onClick={() => { setCustomerInfo({ name: c.full_name || "", customerRef: c.customer_ref || "", phone: c.masked_phone || c.phone || "", accountType: `${c.account_type || ""} account`, language: c.preferred_language || "", campaign: "Voice Studio session" }); setShowCustomerPicker(false); }}>
+                    <span style={{ minWidth: 0 }}><b>{c.full_name}</b><span>{c.customer_ref} · {c.masked_phone || c.phone} · {c.preferred_language}</span></span>
+                  </button>); })}
             </div>
-            {voiceErrorRecoverable && (
-              <button
-                type="button"
-                className="retry-speech-btn"
-                onClick={() => {
-                  voiceConnectionRef.current?.retrySpeech();
-                  setError(null);
-                  setVoiceErrorRecoverable(false);
-                }}
-                style={{
-                  background: "#38bdf8",
-                  color: "#0f172a",
-                  border: "none",
-                  borderRadius: 6,
-                  padding: "6px 12px",
-                  fontSize: "11px",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                ↻ Retry Audio Playback
+          )}
+          <div className="orb-wrap">
+            <div style={{ display: "grid", justifyItems: "center" }}>
+              <div className={`orb ${orbClass}`} aria-hidden="true">
+                <span className="ring" style={{ transform: `scale(${1 + (voiceState === "SPEAKING" ? 0.06 : level * 0.18)})`, opacity: live ? 0.4 + level * 0.6 : 0.15 }} />
+                <span className="glyph">SUBBU</span>
+              </div>
+              <div className="caption" aria-live="polite"><b>{meta.label}</b><span>{meta.hint}</span></div>
+              <div className="partial" aria-live="polite">{live && partialText ? `“${partialText}”` : ""}</div>
+            </div>
+          </div>
+          {error && (
+            <div className="stage-error" role="alert"><span>{error}</span>
+              {voiceErrorRecoverable && live ? <button className="btn sm" onClick={() => { voiceConnectionRef.current?.retrySpeech(); setError(null); }}>Retry audio</button> : <button className="btn sm" onClick={() => setError(null)}>Dismiss</button>}
+            </div>
+          )}
+          <div className="controls" style={{ marginTop: 18 }}>
+            {live && <button className="ctl" onClick={toggleMute} aria-pressed={isMuted} aria-label={isMuted ? "Unmute microphone" : "Mute microphone"} title={isMuted ? "Unmute" : "Mute"} style={isMuted ? { background: "#f59e0b", color: "#111" } : undefined}>{isMuted ? <MicrophoneSlash size={22} /> : <Microphone size={22} />}</button>}
+            {live ? (
+              <button className="call-btn end" onClick={() => void closeCall(true)}><PhoneDisconnect size={20} weight="fill" /> End call</button>
+            ) : (
+              <button className="call-btn" disabled={!canUseMic || !customerInfo.customerRef || voiceState === "PROCESSING"} onClick={() => void answerCall()}
+                title={!customerInfo.customerRef ? "Select a customer first" : !canUseMic ? "This browser cannot capture microphone audio" : ""}>
+                <Phone size={20} weight="fill" /> {callEnded ? "Start new call" : "Start call"}
               </button>
             )}
+            {live && <button className="ctl" onClick={handleInterrupt} disabled={voiceState !== "SPEAKING"} aria-label="Interrupt Subbu" title="Interrupt Subbu"><HandPalm size={22} /></button>}
           </div>
-        )}
-
-        {/* ==================================================================
-            2. CUSTOMER CONTEXT BAR
-            ================================================================== */}
-        <section
-          style={{
-            background: "rgba(15, 23, 42, 0.75)",
-            border: "1px solid rgba(255, 255, 255, 0.08)",
-            borderRadius: "14px",
-            padding: "14px 20px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            flexWrap: "wrap",
-            gap: "12px",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            <div
-              style={{
-                width: "36px",
-                height: "36px",
-                borderRadius: "50%",
-                background: "rgba(13, 148, 136, 0.2)",
-                color: "#2dd4bf",
-                display: "grid",
-                placeItems: "center",
-              }}
-            >
-              <UserCircle size={22} weight="fill" />
-            </div>
-            <div>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <strong style={{ fontSize: "13.5px", color: "#f8fafc" }}>{customerInfo.name}</strong>
-                <small style={{ color: "#94a3b8", fontSize: "11px" }}>({customerInfo.customerRef})</small>
-                <span style={{ fontSize: "11px", color: "#38bdf8", background: "rgba(56, 189, 248, 0.12)", padding: "2px 6px", borderRadius: "4px" }}>
-                  {customerInfo.accountType}
-                </span>
-              </div>
-              <span style={{ fontSize: "11.5px", color: "#94a3b8" }}>
-                Line: {customerInfo.phone} · Lang: {customerInfo.language} · Campaign: {customerInfo.campaign}
+          <div className="stage-foot">
+            <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span className={`mic-meter ${live && !isMuted ? "live" : ""}`} aria-label={live ? `Microphone level ${Math.round(level * 100)}%` : "Microphone idle"}>
+                {[0.2, 0.45, 0.7, 1, 0.7, 0.45, 0.2].map((w, i) => <i key={i} style={{ height: `${4 + (live && !isMuted ? level * w * 14 : 0)}px` }} />)}
               </span>
-            </div>
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <span style={{ fontSize: "11px", color: "#34d399", display: "flex", alignItems: "center", gap: "4px" }}>
-              <ShieldCheck size={14} /> Consent captured during call
+              {!canUseMic ? "Microphone capture unsupported" : live ? (isMuted ? "Microphone muted" : `Microphone live · ${micFramesTransmitted} frames sent`) : "Microphone off"}
             </span>
-            <button
-              className="ops-button ops-button-secondary"
-              style={{ padding: "4px 10px", fontSize: "11px" }}
-              onClick={() => setShowCustomerPicker((prev) => !prev)}
-            >
-              Switch Customer
-            </button>
+            <span>Never share OTPs, PINs or passwords on a call</span>
           </div>
         </section>
 
-        {/* Customer picker dropdown */}
-        {showCustomerPicker && (
-          <div
-            style={{
-              background: "#0f172a",
-              border: "1px solid rgba(255, 255, 255, 0.15)",
-              borderRadius: "12px",
-              padding: "14px",
-              display: "flex",
-              flexDirection: "column",
-              gap: "8px",
-            }}
-          >
-            <span style={{ fontSize: "11.5px", fontWeight: 700, color: "#94a3b8" }}>Select Customer Profile:</span>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "8px" }}>
-              {availableCustomers.map((cust, idx) => {
-                const c = cust as Record<string, string>;
-                return (
-                  <button
-                    key={idx}
-                    className="scenario-pill"
-                    style={{ textAlign: "left", padding: "8px 12px" }}
-                    onClick={() => {
-                      setCustomerInfo({
-                        name: c.full_name || "Customer",
-                        customerRef: c.customer_ref || "",
-                        phone: c.masked_phone || c.phone || "",
-                        accountType: `${c.account_type || ""} account`,
-                        language: c.preferred_language || "",
-                        campaign: "Voice Studio session",
-                      });
-                      setShowCustomerPicker(false);
-                      void startNewSession();
-                    }}
-                  >
-                    <strong style={{ display: "block", color: "#f8fafc", fontSize: "12px" }}>{c.full_name}</strong>
-                    <small style={{ color: "#94a3b8", fontSize: "11px" }}>{c.phone} · {c.preferred_language}</small>
-                  </button>
-                );
-              })}
-            </div>
+        <section className="panel transcript" aria-label="Transcript">
+          <div className="panel-head"><div><h2>Transcript</h2><div className="sub">Sensitive numbers are redacted before storage</div></div>{messages.length > 0 && <span className="badge plain">{messages.length} turns</span>}</div>
+          <div className="transcript-list" aria-live="polite">
+            {messages.length === 0 ? <div className="empty"><h3>No conversation yet</h3><p>Start a call to see Subbu and the customer here in real time.</p></div> :
+              messages.map((m) => <div key={m.id} className={`msg ${m.speaker === "CUSTOMER" ? "cust" : "ava"}`}><small>{m.speaker === "CUSTOMER" ? "Customer" : "Subbu"}{m.redacted ? " · redacted" : ""}</small>{m.text}</div>)}
           </div>
-        )}
-
-        {/* ==================================================================
-            3. CORE CONVERSATION INTERFACE
-            ================================================================== */}
-        <main
-          style={{
-            background: "rgba(15, 23, 42, 0.65)",
-            border: "1px solid rgba(255, 255, 255, 0.08)",
-            borderRadius: "20px",
-            padding: "24px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "20px",
-            backdropFilter: "blur(20px)",
-          }}
-        >
-          {/* Subbu Voice Presence Stage & Action Controls */}
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "20px 0 10px",
-              gap: "14px",
-            }}
-          >
-            {/* Visual presence orb with dynamic aura */}
-            <div
-              className={`active-orb-box ${
-                connected
-                  ? voiceState === "SPEAKING"
-                    ? "speaking"
-                    : voiceState === "SILENCE_REMINDER"
-                    ? "speaking"
-                    : "listening"
-                  : ""
-              }`}
-              style={{ position: "relative" }}
-            >
-              <div
-                className={`fluid-orb-aura ${voiceState === "LISTENING" ? "fluid-orb-listening" : ""}`}
-                style={{
-                  transform: `scale(${1 + (audioEnergy / 100) * 0.35})`,
-                  opacity: connected ? 0.6 + (audioEnergy / 100) * 0.4 : 0,
-                }}
-              />
-              <div className="active-orb-halo" />
-              <div
-                className="active-orb"
-                style={{
-                  transform: `scale(${1 + (audioEnergy / 100) * 0.12})`,
-                  transition: "transform 0.08s ease",
-                }}
-              >
-                {voiceState === "SPEAKING" ? "AVA" : "S"}
-              </div>
-            </div>
-
-            {/* True Microphone Input Level (dB / Energy) Meter */}
-            {connected && !isMuted && (
-              <div className="db-meter-container">
-                <div className="db-meter-readout">
-                  <span>INPUT LEVEL</span>
-                  <strong>
-                    {audioDb > -58 ? `${audioDb} dB` : "-∞ dB"} ({audioEnergy}%)
-                  </strong>
-                </div>
-                <div className="db-meter-tracks" title={`Microphone Input Level: ${audioDb} dB`}>
-                  {Array.from({ length: 14 }).map((_, idx) => {
-                    const threshold = (idx + 1) * (100 / 14);
-                    const isActive = audioEnergy >= threshold;
-                    const isRed = idx >= 11;
-                    const isAmber = idx >= 8 && idx < 11;
-                    const segmentClass = isActive
-                      ? isRed
-                        ? "active-red"
-                        : isAmber
-                        ? "active-amber"
-                        : "active-green"
-                      : "";
-                    return <div key={idx} className={`db-meter-segment ${segmentClass}`} />;
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Dynamic state caption */}
-            <div style={{ textAlign: "center" }}>
-              <div
-                style={{
-                  fontSize: "14px",
-                  fontWeight: 700,
-                  letterSpacing: "0.04em",
-                  color: connected
-                    ? voiceState === "SPEAKING"
-                      ? "#38bdf8"
-                      : voiceState === "SILENCE_REMINDER"
-                      ? "#fbbf24"
-                      : voiceState === "TERMINATING"
-                      ? "#f87171"
-                      : voiceState === "LISTENING"
-                      ? "#34d399"
-                      : "#a78bfa"
-                    : "#94a3b8",
-                }}
-              >
-                {connected
-                  ? voiceState === "SPEAKING"
-                    ? "SUBBU IS SPEAKING"
-                    : voiceState === "SILENCE_REMINDER"
-                    ? "REMINDING CUSTOMER (NO RESPONSE)"
-                    : voiceState === "TERMINATING"
-                    ? "ENDING CALL (NO RESPONSE)"
-                    : voiceState === "LISTENING"
-                    ? "LISTENING TO YOU"
-                    : voiceState === "PROCESSING"
-                    ? "THINKING & EVALUATING"
-                    : voiceState === "INTERRUPTED"
-                    ? "INTERRUPTED"
-                    : "CONNECTED"
-                  : callEnded
-                  ? intent === "NO_RESPONSE"
-                    ? "CALL CONCLUDED · NO RESPONSE"
-                    : "INTERACTION CONCLUDED"
-                  : "SUBBU READY TO CALL"}
-              </div>
-              <span style={{ fontSize: "11.5px", color: "#64748b" }}>
-                {connected
-                  ? isMuted
-                    ? "Microphone muted"
-                    : "Speak naturally · Automatic speech interruption and barge-in active"
-                  : "Town Bank automated voice assistant calling regarding mobile app update"}
-              </span>
-            </div>
-
-            {/* Primary Call Controls */}
-            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginTop: "4px" }}>
-              {!connected ? (
-                <button
-                  className="answer-call-btn"
-                  disabled={!canUseMic || voiceState === "PROCESSING"}
-                  onClick={() => void answerCall()}
-                  style={{ minWidth: "200px" }}
-                >
-                  <Phone size={20} weight="fill" />
-                  <span>{callEnded ? "START NEW CALL" : "START CALL"}</span>
-                </button>
-              ) : (
-                <>
-                  <button
-                    className="developer-toggle"
-                    style={{ background: isMuted ? "#ef4444" : "rgba(30, 41, 59, 0.8)", color: "#fff", padding: "10px 16px", borderRadius: "10px" }}
-                    onClick={toggleMute}
-                    title={isMuted ? "Unmute Mic" : "Mute Mic"}
-                  >
-                    {isMuted ? <MicrophoneSlash size={16} /> : <Microphone size={16} />}
-                    <span>{isMuted ? "Unmute" : "Mute"}</span>
-                  </button>
-
-                  <button
-                    className="developer-toggle"
-                    style={{ background: "rgba(30, 41, 59, 0.8)", color: "#fbbf24", padding: "10px 16px", borderRadius: "10px" }}
-                    onClick={handleInterrupt}
-                    title="Interrupt Subbu speaking"
-                  >
-                    <Hand size={16} weight="fill" />
-                    <span>Interrupt</span>
-                  </button>
-
-                  <button
-                    className="end-call-btn"
-                    onClick={() => void closeCall(true)}
-                    style={{ padding: "10px 22px" }}
-                  >
-                    <PhoneDisconnect size={18} weight="fill" />
-                    <span>END CALL</span>
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* Live Transcript Panel */}
-          <div className="transcript-card" style={{ margin: 0 }}>
-            <div className="transcript-header">
-              <h2>Customer Conversation</h2>
-              <span style={{ fontSize: "11px", color: "#94a3b8" }}>
-                {messages.length} conversational turns
-              </span>
-            </div>
-
-            <div className="transcript-scroll" style={{ minHeight: "260px", maxHeight: "400px" }}>
-              {messages.map((m) => (
-                <div
-                  key={m.id}
-                  className={`message-bubble ${m.speaker === "AVA" || m.speaker === "Subbu" ? "is-ava" : "is-customer"}`}
-                >
-                  <div className="message-bubble-header">
-                    <span>{m.speaker === "AVA" || m.speaker === "Subbu" ? "Subbu (Town Bank Assistant)" : "CUSTOMER (You)"}</span>
-                    <span>{m.time}</span>
-                  </div>
-                  <div>{m.text}</div>
-                </div>
-              ))}
-
-              {partialText && (
-                <div className="partial-live-bubble">
-                  <Waveform size={15} style={{ animation: "wave-bar 0.7s infinite alternate" }} />
-                  <span>{partialText}</span>
-                </div>
-              )}
-
-              {!messages.length && !partialText && (
-                <div style={{ color: "#64748b", fontSize: "13px", textAlign: "center", padding: "40px 20px" }}>
-                  {connected ? "Subbu is initiating opening disclosure…" : "Press 'Start Call' to initiate outbound conversation with Subbu."}
-                </div>
-              )}
-            </div>
-
-            {/* In-Call Text Fallback Composer */}
-            <div className="in-call-composer">
-              <input
-                placeholder="Speak into microphone or type response here…"
-                value={composerText}
-                onChange={(e) => setComposerText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSendText();
-                }}
-              />
-              <button
-                className="in-call-send-btn"
-                disabled={!composerText.trim()}
-                onClick={handleSendText}
-                aria-label="Send typed turn"
-              >
-                <PaperPlaneRight size={16} weight="fill" />
-              </button>
-            </div>
-          </div>
-
-          {/* Call Completed Outcome Card */}
-          {callEnded && (
-            <div
-              style={{
-                background: "rgba(16, 185, 129, 0.08)",
-                border: "1px solid rgba(16, 185, 129, 0.25)",
-                borderRadius: "14px",
-                padding: "16px 20px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                flexWrap: "wrap",
-                gap: "14px",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                <CheckCircle size={26} color="#10b981" weight="fill" />
-                <div>
-                  <strong style={{ fontSize: "13.5px", color: "#f8fafc", display: "block" }}>
-                    Call Completed · Duration: {formatDuration(finalDuration || callDuration)}
-                  </strong>
-                  <span style={{ fontSize: "12px", color: "#94a3b8" }}>
-                    Outcome: {intent === "NO_RESPONSE" ? "Terminated (No Customer Response)" : callbackRequested ? "Callback Scheduled" : caseId ? `Support Case Created (#${caseId})` : policy === "BLOCKED" ? "Blocked by Security Guard" : "Concluded Successfully"}
-                  </span>
-                </div>
-              </div>
-
-              <div style={{ display: "flex", gap: "8px" }}>
-                <button className="ops-button ops-button-primary" onClick={() => void answerCall()}>
-                  <Phone size={14} /> Start Next Call
-                </button>
-              </div>
+          {(caseId || callbackRequested || policy === "BLOCKED") && (
+            <div className="outcome">
+              {caseId && <span className="badge warn">Case {caseId} raised</span>}
+              {callbackRequested && <span className="badge info">Callback recorded</span>}
+              {policy === "BLOCKED" && <span className="badge bad">Sensitive input blocked</span>}
             </div>
           )}
-        </main>
-
-        {/* Global Security Badges Strip */}
-        <footer className="security-status-strip">
-          <span>
-            <ShieldCheck size={16} /> Customer PII Redacted
-          </span>
-          <span>
-            <Lock size={16} /> Sensitive OTP/PIN Intercepted
-          </span>
-          <span>
-            <ShieldCheck size={16} /> Closed-World Knowledge Grounding
-          </span>
-          <span>
-            <Clock size={16} /> Calling window enforced (09:00–19:00 IST)
-          </span>
-        </footer>
-
-        {/* ==================================================================
-            4. COLLAPSIBLE ENGINEERING DIAGNOSTICS & TELEMETRY DRAWER
-            ================================================================== */}
-        {showDiagnostics && (
-          <>
-            <div className="diagnostics-backdrop" onClick={() => setShowDiagnostics(false)} />
-            <aside className="diagnostics-drawer" role="dialog" aria-label="Engineering Diagnostics">
-              <div className="diagnostics-header">
-                <h2>
-                  <SlidersHorizontal size={18} color="#38bdf8" />
-                  <span>Engineering Diagnostics &amp; Telemetry</span>
-                </h2>
-                <button
-                  className="diagnostics-close-btn"
-                  onClick={() => setShowDiagnostics(false)}
-                  aria-label="Close diagnostics"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-
-              <div className="diagnostics-body">
-                {/* Section 1: Measured Pipeline Latencies */}
-                <div className="diagnostics-section">
-                  <div className="diagnostics-section-title">
-                    <Waveform size={14} /> Real-Time Latency Telemetry (ms)
-                  </div>
-                  <div className="latency-grid">
-                    {Object.entries(TIMING_LABELS).map(([key, label]) => (
-                      <div key={key} className="latency-metric">
-                        <span>{label}</span>
-                        <strong>{timings[key] === undefined ? "—" : `${Math.round(timings[key])} ms`}</strong>
-                      </div>
-                    ))}
-                  </div>
-
-                  {telemetryHistory.length > 0 && (() => {
-                    const latencies = telemetryHistory.map((t) => t.stages.total_turn_response_ms);
-                    const stats = calculatePercentiles(latencies);
-                    return (
-                      <div style={{ marginTop: "12px", fontSize: "11px", color: "#64748b", display: "flex", justifyContent: "space-between", background: "#060a13", padding: "8px 12px", borderRadius: "6px", border: "1px solid #1e293b" }}>
-                        <span>Turns: <strong style={{ color: "#cbd5e1" }}>{latencies.length}</strong></span>
-                        <span>P50: <strong style={{ color: "#34d399" }}>{Math.round(stats.p50)}ms</strong></span>
-                        <span>P95: <strong style={{ color: "#38bdf8" }}>{Math.round(stats.p95)}ms</strong></span>
-                        <span>P99: <strong style={{ color: "#f59e0b" }}>{Math.round(stats.p99)}ms</strong></span>
-                      </div>
-                    );
-                  })()}
-                </div>
-
-                {/* Section 2: Audio Transport & Stream Diagnostics */}
-                <div className="diagnostics-section">
-                  <div className="diagnostics-section-title">
-                    <Microphone size={14} /> Audio Stream &amp; Buffer Status
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", fontSize: "11.5px" }}>
-                    <div>
-                      <span style={{ color: "#94a3b8" }}>Mic Chunks Sent:</span>
-                      <strong style={{ color: "#38bdf8", marginLeft: "6px" }}>{micFramesTransmitted}</strong>
-                    </div>
-                    <div>
-                      <span style={{ color: "#94a3b8" }}>Server Acks:</span>
-                      <strong style={{ color: "#34d399", marginLeft: "6px" }}>{serverFramesCount}</strong>
-                    </div>
-                    <div>
-                      <span style={{ color: "#94a3b8" }}>Sample Rates:</span>
-                      <strong style={{ color: "#cbd5e1", marginLeft: "6px" }}>16kHz mic / 24kHz out</strong>
-                    </div>
-                    <div>
-                      <span style={{ color: "#94a3b8" }}>Worklet State:</span>
-                      <strong style={{ color: canUseMic ? "#34d399" : "#ef4444", marginLeft: "6px" }}>
-                        {canUseMic ? "Active" : "Unavailable"}
-                      </strong>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Section 3: Deterministic KURAL Decision Layer */}
-                <div className="diagnostics-section">
-                  <div className="diagnostics-section-title">
-                    <Lock size={14} /> KURAL Decision &amp; Policy Inspector
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">FSM STATE</span>
-                      <strong className="kural-metric-val">{kuralState || "DISCLOSURE"}</strong>
-                    </div>
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">CLASSIFIED INTENT</span>
-                      <strong className="kural-metric-val" style={{ color: "#38bdf8" }}>
-                        {intent || "Awaiting Utterance"}
-                      </strong>
-                    </div>
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">POLICY CHECK</span>
-                      <span className={`kural-pill-tag ${policy === "BLOCKED" ? "kural-pill-blocked" : "kural-pill-allowed"}`}>
-                        {policy || "ALLOWED"}
-                      </span>
-                    </div>
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">INFERENCE MODE</span>
-                      <span className={`kural-pill-tag ${fallbackUsed ? "kural-pill-blocked" : "kural-pill-allowed"}`}>
-                        {fallbackUsed ? "⚡ Local Fallback (<2ms)" : "🤖 Live LLM Layer"}
-                      </span>
-                    </div>
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">NLU PROVIDER / MODEL</span>
-                      <strong className="kural-metric-val" style={{ color: "#38bdf8", fontSize: "11px" }}>
-                        {turnTelemetry ? `${turnTelemetry.provider} · ${turnTelemetry.model}` : "Configured LLM Layer"}
-                      </strong>
-                    </div>
-
-                    {secondaryQuestion && (
-                      <div className="kural-metric-row">
-                        <span className="kural-metric-label">SIDE QUESTION</span>
-                        <strong className="kural-metric-val" style={{ color: "#fbbf24", fontSize: "11px" }}>
-                          {secondaryQuestion}
-                        </strong>
-                      </div>
-                    )}
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">AUTHORIZED ACTION</span>
-                      <span className="kural-pill-tag kural-pill-action">
-                        {callbackRequested ? "REQUEST_CALLBACK" : caseId ? "CREATE_APP_UPDATE_CASE" : "NO_OP"}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Section 4: Speech Voice Samples */}
-                <div className="diagnostics-section">
-                  <div className="diagnostics-section-title">
-                    <Waveform size={14} /> Voice Model Samples (Dual-Voice Comparison)
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
-                    <div className="sample-voice-card">
-                      <div className="sample-voice-info">
-                        <strong>Subbu (Male · Aditya)</strong>
-                        <small>Outbound Voice Assistant</small>
-                      </div>
-                      <button
-                        className={`sample-voice-play-btn ${playingVoice === "subbu" ? "is-playing" : ""}`}
-                        onClick={() => playVoiceSample("/samples/voice_subbu_male.wav", "subbu")}
-                      >
-                        {playingVoice === "subbu" ? "⏹ Stop" : "▶ Subbu"}
-                      </button>
-                    </div>
-
-                    <div className="sample-voice-card">
-                      <div className="sample-voice-info">
-                        <strong>Priya (Female · Priya)</strong>
-                        <small>Support Specialist</small>
-                      </div>
-                      <button
-                        className={`sample-voice-play-btn ${playingVoice === "priya" ? "is-playing" : ""}`}
-                        onClick={() => playVoiceSample("/samples/voice_priya_female.wav", "priya")}
-                      >
-                        {playingVoice === "priya" ? "⏹ Stop" : "▶ Priya"}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Section 5: Automated Operational Scenarios */}
-                <div className="diagnostics-section">
-                  <div className="diagnostics-section-title">
-                    <Sparkle size={14} /> Test Phrase Triggers (Spec §20)
-                  </div>
-                  <div className="demo-scenarios-pills" style={{ marginBottom: "14px" }}>
-                    {MASTER_DEMO_STEPS.map((sc) => (
-                      <button key={sc.id} className="scenario-pill" onClick={() => handleTriggerScenario(sc)}>
-                        <span style={{ color: "#38bdf8", fontWeight: 700 }}>{sc.badge}:</span> {sc.text}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="diagnostics-section-title">
-                    <ShieldCheck size={14} /> Golden Edge Cases
-                  </div>
-                  <div className="demo-scenarios-pills">
-                    {GOLDEN_SCENARIOS.map((sc) => (
-                      <button key={sc.id} className="scenario-pill" onClick={() => handleTriggerScenario(sc)}>
-                        <span style={{ color: "#2dd4bf", fontWeight: 700 }}>{sc.badge}:</span> {sc.text}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </aside>
-          </>
-        )}
+          <div className="composer">
+            <input className="input" placeholder={live ? "Type the customer's reply (text fallback)" : "Start a call to use the text fallback"} value={composerText} disabled={!live}
+              onChange={(e) => setComposerText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && composerText.trim() && handleSendText()} aria-label="Customer reply" />
+            <button className="btn" disabled={!live || !composerText.trim()} onClick={handleSendText}>Send</button>
+          </div>
+        </section>
       </div>
-    </div>
+
+      <details className="diag" open={showDiagnostics} onToggle={(e) => setShowDiagnostics((e.target as HTMLDetailsElement).open)}>
+        <summary>Diagnostics</summary>
+        <div className="stack" style={{ marginTop: 8 }}>
+          <div className="diag-grid">
+            <div className="diag-cell"><label>KURAL state</label><b>{kuralState}</b></div>
+            <div className="diag-cell"><label>Last intent</label><b>{intent || "—"}</b></div>
+            <div className="diag-cell"><label>Policy</label><b>{policy ?? "—"}</b></div>
+            <div className="diag-cell"><label>LLM fallback used</label><b>{fallbackUsed ? "Yes (rules)" : "No"}</b></div>
+            <div className="diag-cell"><label>Session</label><b className="mono">{sessionId ? sessionId.slice(0, 8) : "—"}</b></div>
+            <div className="diag-cell"><label>Mic frames / server frames</label><b>{micFramesTransmitted} / {serverFramesCount}</b></div>
+            <div className="diag-cell"><label>Input level</label><b>{audioDb.toFixed(0)} dB</b></div>
+            <div className="diag-cell"><label>Turn latency p50 / p95</label><b>{lat.length ? `${Math.round(pct.p50)} / ${Math.round(pct.p95)} ms` : "—"}</b></div>
+          </div>
+          {turnTelemetry && (
+            <div className="diag-grid">
+              {Object.entries(turnTelemetry.stages).map(([k, v]) => <div className="diag-cell" key={k}><label>{k.replace(/_/g, " ")}</label><b>{Math.round(v)} ms</b></div>)}
+            </div>
+          )}
+          <div>
+            <p className="small muted" style={{ margin: "0 0 6px" }}>Test utterances — sent as typed customer replies during a live call (QA only).</p>
+            <div className="chips">{[...MASTER_DEMO_STEPS, ...GOLDEN_SCENARIOS].map((sc) => <button key={sc.id} className="chip" disabled={!live} onClick={() => handleTriggerScenario(sc)} title={sc.text}>{sc.label}</button>)}</div>
+          </div>
+        </div>
+      </details>
+    </>
   );
 }

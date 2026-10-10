@@ -1,450 +1,185 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import {
-  ArrowsClockwise,
-  CheckCircle,
-  ClockAfternoon,
-  PencilSimple,
-  X,
-} from "@phosphor-icons/react";
-import { StatusPill } from "../components/StatusPill";
-import { useDashboard } from "../hooks/DashboardContext";
-import { dashboardApi } from "../services/dashboardApi";
-import type { Callback, EscalationCase } from "../types";
+import { CalendarCheck, Tray } from "@phosphor-icons/react";
+import { useApi } from "../hooks/useApi";
+import { useAuth } from "../auth/AuthContext";
+import { apiJson } from "../services/http";
+import { Badge, Drawer, Empty, ErrorNote, Kpi, Loading, Modal, PageHead, Panel, Tabs, fmtDateTime, fmtRelative, titleCase } from "../components/ui";
+
+interface CaseRow { id: string; priority: string; status: string; category: string; case_type: string; customer_ref: string; customer_name: string | null; masked_phone: string; summary: string; assigned_team: string; assigned_agent_id: string | null; assigned_agent_name: string | null; sla_due_at: string | null; sla_breached: boolean; created_at: string; callback_id: string | null; resolution_notes: string | null; source: string; history?: { event_id: string; event_type: string; from_value: string | null; to_value: string | null; note: string | null; actor: string; created_at: string }[] }
+interface CallbackRow { id: string; customer_ref: string; customer_name: string | null; maskedPhone: string; status: string; raw_status: string; scheduled_at_utc: string | null; relative_label: string; reason: string; case_id: string | null; priority: string | null; assigned_agent_name: string | null; attempt_count: number; last_outcome: string | null; outcome_notes: string | null; version: number; moved_label: string | null; history: { event_id: string; event_type: string; actor: string; old_value: string | null; new_value: string | null; created_at: string }[] }
+interface Agent { id: string; name: string; availability: string; openCases: number; maxOpenCases: number; skills: string[] }
+
+const OPEN = ["NEW", "ASSIGNED", "IN_PROGRESS", "PENDING_CUSTOMER"];
+const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+
+function useAction(onDone: () => void) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true); setErr(null);
+    try { await fn(); onDone(); } catch (e) { setErr(e instanceof Error ? e.message : "Action failed"); } finally { setBusy(false); }
+  };
+  return { busy, err, run, setErr };
+}
+
+function CaseDrawer({ id, onClose, onChanged }: { id: string; onClose: () => void; onChanged: () => void }) {
+  const { can, user } = useAuth();
+  const { data: c, reload } = useApi<CaseRow>(`/api/escalations/${id}`, [id]);
+  const agents = useApi<{ agents: Agent[] }>(can("case:assign") ? "/api/agents" : null);
+  const { busy, err, run } = useAction(() => { void reload(); onChanged(); });
+  const [note, setNote] = useState("");
+  const [resolving, setResolving] = useState(false);
+  const [resolution, setResolution] = useState("");
+  const patch = (body: object) => apiJson(`/api/escalations/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+  if (!c) return <Drawer title="Case" onClose={onClose}><Loading /></Drawer>;
+  const open = OPEN.includes(c.status);
+  const mine = user?.agent_id && c.assigned_agent_id === user.agent_id;
+  return (
+    <Drawer title={`${titleCase(c.category)}`} sub={`${c.id} · ${c.customer_name ?? c.customer_ref} ${c.masked_phone ? `· ${c.masked_phone}` : ""}`} onClose={onClose}
+      footer={open && can("case:work") && <>
+        {c.status !== "IN_PROGRESS" && <button className="btn" disabled={busy} onClick={() => run(() => patch({ status: "IN_PROGRESS" }))}>Start work</button>}
+        <button className="btn primary" disabled={busy} onClick={() => setResolving(true)}>Resolve case</button></>}>
+      {err && <ErrorNote error={err} />}
+      <div className="actions"><Badge value={c.priority?.toUpperCase()} /><Badge value={c.status} /><span className={`badge ${c.sla_breached ? "bad" : "plain"}`}>SLA {fmtRelative(c.sla_due_at)}</span></div>
+      <dl className="kv">
+        <dt>Summary</dt><dd>{c.summary || "—"}</dd>
+        <dt>Team</dt><dd>{titleCase(c.assigned_team)}</dd>
+        <dt>Owner</dt><dd>{c.assigned_agent_name ?? "Unassigned"}{mine ? " (you)" : ""}</dd>
+        <dt>SLA due</dt><dd className="num">{fmtDateTime(c.sla_due_at)}</dd>
+        <dt>Raised</dt><dd className="num">{fmtDateTime(c.created_at)} · {c.source === "VOICE_AI" ? "by Subbu" : "by staff"}</dd>
+        <dt>Callback</dt><dd>{c.callback_id ?? "—"}</dd>
+        {c.resolution_notes && <><dt>Resolution</dt><dd>{c.resolution_notes}</dd></>}
+      </dl>
+      {open && can("case:assign") && (
+        <section><h3 className="section-title">Ownership</h3>
+          <div className="actions">
+            <select className="select" aria-label="Assign to agent" value={c.assigned_agent_id ?? ""} disabled={busy} onChange={(e) => e.target.value && run(() => patch({ assigned_agent_id: e.target.value }))}>
+              <option value="">{c.assigned_agent_id ? "Reassign to…" : "Assign to…"}</option>
+              {agents.data?.agents.filter((a) => a.availability !== "OFFLINE").map((a) => <option key={a.id} value={a.id}>{a.name} · {titleCase(a.availability)} · {a.openCases}/{a.maxOpenCases}</option>)}
+            </select>
+            <button className="btn" disabled={busy} onClick={() => run(() => apiJson("/api/agents/assign", { method: "POST", body: JSON.stringify({ category: c.category }) }).then((r) => patch({ assigned_agent_id: (r as { assigned_agent: Agent }).assigned_agent.id })))}>Auto-assign</button>
+          </div>
+        </section>
+      )}
+      {open && can("case:work") && (
+        <section><h3 className="section-title">Add note</h3>
+          <textarea className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Visible to the team. Do not record OTPs, PINs or card numbers." />
+          <div style={{ marginTop: 8 }}><button className="btn" disabled={busy || !note.trim()} onClick={() => run(() => patch({ note }).then(() => setNote("")))}>Save note</button></div>
+        </section>
+      )}
+      <section><h3 className="section-title">History</h3>
+        <div className="timeline">{(c.history ?? []).map((h) => (
+          <div className="tl" key={h.event_id}><div><b>{titleCase(h.event_type)}</b>{h.to_value ? ` → ${h.to_value}` : ""}{h.note && <div>{h.note}</div>}<small>{h.actor} · {fmtDateTime(h.created_at)}</small></div></div>
+        ))}</div>
+      </section>
+      {resolving && <Modal title="Resolve case" onClose={() => setResolving(false)} footer={<><button className="btn" onClick={() => setResolving(false)}>Cancel</button><button className="btn primary" disabled={busy || !resolution.trim()} onClick={() => run(() => patch({ status: "RESOLVED", resolution_notes: resolution }).then(() => setResolving(false)))}>Resolve</button></>}>
+        <label className="field">Resolution notes<textarea className="input" value={resolution} onChange={(e) => setResolution(e.target.value)} /><small>Required. Recorded in the case history and audit trail.</small></label>
+      </Modal>}
+    </Drawer>
+  );
+}
+
+function CallbackDrawer({ cb, onClose, onChanged }: { cb: CallbackRow; onClose: () => void; onChanged: () => void }) {
+  const { can } = useAuth();
+  const { busy, err, run } = useAction(onChanged);
+  const [when, setWhen] = useState("");
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const active = ["REQUESTED", "SCHEDULED", "DUE"].includes(cb.raw_status);
+  return (
+    <Drawer title={cb.customer_name ?? cb.customer_ref} sub={`${cb.id} · ${cb.maskedPhone}`} onClose={onClose}
+      footer={active && can("callback:manage") && <button className="btn danger" disabled={busy} onClick={() => setConfirmCancel(true)}>Cancel callback</button>}>
+      {err && <ErrorNote error={err} />}
+      <div className="actions"><Badge value={cb.status} />{cb.priority && <Badge value={cb.priority.toUpperCase()} />}</div>
+      <dl className="kv">
+        <dt>Scheduled</dt><dd>{cb.scheduled_at_utc ? `${fmtDateTime(cb.scheduled_at_utc)} (${fmtRelative(cb.scheduled_at_utc)})` : "Time not agreed yet"}</dd>
+        <dt>Reason</dt><dd>{titleCase(cb.reason)}</dd>
+        <dt>Linked case</dt><dd>{cb.case_id ?? "—"}</dd>
+        <dt>Owner</dt><dd>{cb.assigned_agent_name ?? "Unassigned"}</dd>
+        <dt>Attempts</dt><dd>{cb.attempt_count}{cb.last_outcome ? ` · last: ${titleCase(cb.last_outcome)}` : ""}</dd>
+        {cb.outcome_notes && <><dt>Note</dt><dd>{cb.outcome_notes}</dd></>}
+      </dl>
+      {active && can("callback:manage") && (
+        <section><h3 className="section-title">{cb.scheduled_at_utc ? "Reschedule" : "Agree a time"}</h3>
+          <div className="actions"><input type="datetime-local" className="input" value={when} onChange={(e) => setWhen(e.target.value)} aria-label="New callback time" />
+            <button className="btn primary" disabled={busy || !when} onClick={() => run(() => apiJson(`/api/callbacks/${cb.id}/reschedule`, { method: "POST", body: JSON.stringify({ preferredAt: new Date(when).toISOString() }) }))}>Save time</button></div>
+          <p className="small muted">Calling window 09:00–19:00 IST, no Sundays or bank holidays. The previous time is invalidated.</p>
+        </section>
+      )}
+      <section><h3 className="section-title">History</h3>
+        <div className="timeline">{cb.history.map((h) => <div className="tl" key={h.event_id}><div><b>{titleCase(h.event_type)}</b>{h.new_value ? ` → ${h.new_value}` : ""}<small>{h.actor} · {fmtDateTime(h.created_at)}</small></div></div>)}</div>
+      </section>
+      {confirmCancel && <Modal title="Cancel this callback?" onClose={() => setConfirmCancel(false)} footer={<><button className="btn" onClick={() => setConfirmCancel(false)}>Keep</button><button className="btn danger solid" disabled={busy} onClick={() => run(() => apiJson(`/api/callbacks/${cb.id}/cancel`, { method: "POST", body: "{}" })).then(() => setConfirmCancel(false))}>Cancel callback</button></>}>
+        <p style={{ margin: 0 }}>The customer will not be called. This is recorded in the callback history.</p>
+      </Modal>}
+    </Drawer>
+  );
+}
 
 export function WorkQueuePage() {
-  const { snapshot, refresh } = useDashboard();
-  const [searchParams] = useSearchParams();
-  const tabParam = searchParams.get("tab");
-  const [activeTab, setActiveTab] = useState<"escalations" | "callbacks">(
-    tabParam === "callbacks" ? "callbacks" : "escalations"
-  );
-
-  // Modals state
-  const [selectedCase, setSelectedCase] = useState<EscalationCase | null>(null);
-  const [assignModalOpen, setAssignModalOpen] = useState(false);
-  const [assignedAgent, setAssignedAgent] = useState("AG-001");
-  const [resolveModalOpen, setResolveModalOpen] = useState(false);
-  const [resolveNotes, setResolveNotes] = useState("");
-
-  const [selectedCallback, setSelectedCallback] = useState<Callback | null>(null);
-  const [rescheduleModalOpen, setRescheduleModalOpen] = useState(false);
-  const [rescheduleTime, setRescheduleTime] = useState("");
-  const [actionError, setActionError] = useState<string | null>(null);
-  const fail = (e: unknown) => setActionError(e instanceof Error ? e.message : "The action failed");
-
-  const [filterPriority, setFilterPriority] = useState<string>("ALL");
-  const [actionLoading, setActionLoading] = useState(false);
-
-  const escalations = snapshot?.escalations ?? [];
-  const callbacks = snapshot?.callbacks ?? [];
-
-  const filteredEscalations = escalations.filter(
-    (e) => filterPriority === "ALL" || e.priority === filterPriority
-  );
-
-  async function handleAssignSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!selectedCase) return;
-    setActionLoading(true);
-    setActionError(null);
-    try {
-      await dashboardApi.updateCase(selectedCase.id, {
-        assignedAgentId: assignedAgent,
-        status: "ASSIGNED",
-      });
-      setAssignModalOpen(false);
-      refresh();
-    } catch (err) {
-      fail(err);
-    } finally {
-      setActionLoading(false);
-    }
-  }
-
-  async function handleResolveSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!selectedCase) return;
-    setActionLoading(true);
-    setActionError(null);
-    try {
-      await dashboardApi.updateCase(selectedCase.id, {
-        status: "RESOLVED",
-        resolution_notes: resolveNotes,
-      });
-      setResolveModalOpen(false);
-      setResolveNotes("");
-      refresh();
-    } catch (err) {
-      fail(err);
-    } finally {
-      setActionLoading(false);
-    }
-  }
-
-  async function handleRescheduleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!selectedCallback) return;
-    setActionLoading(true);
-    setActionError(null);
-    try {
-      await dashboardApi.updateCallback(selectedCallback.id, {
-        preferredAt: new Date(rescheduleTime).toISOString(),
-      });
-      setRescheduleModalOpen(false);
-      refresh();
-    } catch (err) {
-      fail(err);
-    } finally {
-      setActionLoading(false);
-    }
-  }
-
-  async function handleCancelCallback(cb: Callback) {
-    if (!confirm(`Cancel scheduled callback ${cb.id} for customer ${cb.customerRef}?`)) return;
-    setActionLoading(true);
-    setActionError(null);
-    try {
-      await dashboardApi.updateCallback(cb.id, { status: "CANCELLED" });
-      refresh();
-    } catch (err) {
-      fail(err);
-    } finally {
-      setActionLoading(false);
-    }
-  }
-
+  const { user } = useAuth();
+  const [params, setParams] = useSearchParams();
+  const tab = (params.get("tab") as "cases" | "callbacks") || "cases";
+  const [scope, setScope] = useState<"all" | "mine" | "unassigned">(user?.role === "AGENT" ? "mine" : "all");
+  const [showClosed, setShowClosed] = useState(false);
+  const cases = useApi<CaseRow[]>("/api/escalations");
+  const callbacks = useApi<CallbackRow[]>("/api/callbacks");
+  const [cbOpen, setCbOpen] = useState<CallbackRow | null>(null);
+  const caseId = params.get("case");
+  const all = cases.data ?? [];
+  const openCases = all.filter((c) => OPEN.includes(c.status));
+  const caseRows = (showClosed ? all : openCases)
+    .filter((c) => scope === "all" || (scope === "mine" ? c.assigned_agent_id === user?.agent_id : !c.assigned_agent_id))
+    .sort((a, b) => Number(b.sla_breached) - Number(a.sla_breached) || (PRIORITY_RANK[a.priority?.toLowerCase()] ?? 9) - (PRIORITY_RANK[b.priority?.toLowerCase()] ?? 9) || (a.sla_due_at ?? "").localeCompare(b.sla_due_at ?? ""));
+  const cbs = (callbacks.data ?? []).filter((c) => showClosed || ["REQUESTED", "SCHEDULED", "DUE", "DIALING", "OVERDUE"].includes(c.status));
+  const refresh = () => { void cases.reload(); void callbacks.reload(); };
   return (
-    <div className="ops-page">
-      {actionError && <div className="ops-alert ops-alert-error" role="alert">{actionError} <button className="ops-button" onClick={() => setActionError(null)}>Dismiss</button></div>}
-      <div className="ops-page-header">
-        <div>
-          <h1 className="ops-page-title">Work Queue</h1>
-          <p className="ops-page-subtitle">
-            Unified human banking operations: prioritized customer escalations, SLA deadlines & governed callback fulfillment.
-          </p>
-        </div>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button className="ops-button" onClick={() => refresh()}>
-            <ArrowsClockwise size={16} /> Refresh Queue
-          </button>
-        </div>
+    <>
+      <PageHead title="Work Queue" sub="Escalated cases and customer callbacks waiting on people, ordered by SLA risk." />
+      <div className="kpis">
+        <Kpi label="Open cases" value={openCases.length} />
+        <Kpi label="Unassigned" value={openCases.filter((c) => !c.assigned_agent_id).length} tone={openCases.some((c) => !c.assigned_agent_id) ? "warn" : undefined} />
+        <Kpi label="Past SLA" value={openCases.filter((c) => c.sla_breached).length} tone={openCases.some((c) => c.sla_breached) ? "alert" : undefined} />
+        <Kpi label="Callbacks due" value={(callbacks.data ?? []).filter((c) => c.status === "DUE" || c.status === "OVERDUE").length} />
+        <Kpi label="Need a time" value={(callbacks.data ?? []).filter((c) => c.status === "REQUESTED").length} />
       </div>
-
-      {/* Tabs */}
-      <div className="ops-tabs" style={{ marginBottom: "1.25rem" }}>
-        <button
-          className={`ops-tab ${activeTab === "escalations" ? "active" : ""}`}
-          onClick={() => setActiveTab("escalations")}
-        >
-          Support Escalations ({escalations.length})
-        </button>
-        <button
-          className={`ops-tab ${activeTab === "callbacks" ? "active" : ""}`}
-          onClick={() => setActiveTab("callbacks")}
-        >
-          Scheduled Callbacks ({callbacks.length})
-        </button>
-      </div>
-
-      {/* TAB 1: SUPPORT ESCALATIONS */}
-      {activeTab === "escalations" && (
-        <div className="ops-card">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: "1rem",
-              flexWrap: "wrap",
-              gap: "0.5rem",
-            }}
-          >
-            <h3 style={{ margin: 0 }}>Active Escalations & Disputes</h3>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-              <label style={{ fontSize: "0.85rem", color: "var(--ops-muted)" }}>Priority:</label>
-              <select
-                className="ops-select"
-                value={filterPriority}
-                onChange={(e) => setFilterPriority(e.target.value)}
-              >
-                <option value="ALL">All Priorities</option>
-                <option value="URGENT">URGENT</option>
-                <option value="HIGH">HIGH</option>
-                <option value="NORMAL">NORMAL</option>
-                <option value="LOW">LOW</option>
-              </select>
-            </div>
-          </div>
-
-          {filteredEscalations.length === 0 ? (
-            <div className="ops-empty-state" style={{ padding: "3rem 1rem", textAlign: "center" }}>
-              <CheckCircle size={48} style={{ color: "#10b981", marginBottom: "0.75rem" }} />
-              <h3 style={{ margin: "0 0 0.5rem 0" }}>Work Queue Clear</h3>
-              <p style={{ color: "var(--ops-muted)", maxWidth: "400px", margin: "0 auto" }}>
-                There are no open escalations or disputes pending assignment. All customer cases have met SLA targets.
-              </p>
-            </div>
+      <Tabs value={tab} onChange={(t) => setParams({ tab: t })} items={[{ key: "cases", label: "Cases", count: openCases.length }, { key: "callbacks", label: "Callbacks", count: cbs.length }]} />
+      <Panel flush>
+        <div className="toolbar">
+          {tab === "cases" && <div className="seg" role="group" aria-label="Scope">{(["all", "mine", "unassigned"] as const).map((s) => <button key={s} className={scope === s ? "on" : ""} onClick={() => setScope(s)} disabled={s === "mine" && !user?.agent_id}>{titleCase(s)}</button>)}</div>}
+          <label className="small muted" style={{ display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} /> Include closed</label>
+        </div>
+        {tab === "cases" ? (
+          cases.error ? <div style={{ padding: 12 }}><ErrorNote error={cases.error} onRetry={cases.reload} /></div> : cases.loading ? <Loading /> : caseRows.length === 0 ? (
+            <Empty icon={<Tray size={20} />} title="Nothing waiting" text="When a customer asks for a person or reports an issue, Subbu raises a case here with its SLA." />
           ) : (
-            <div className="ops-table-wrapper">
-              <table className="ops-table">
-                <thead>
-                  <tr>
-                    <th>Case ID</th>
-                    <th>Customer</th>
-                    <th>Category</th>
-                    <th>Priority</th>
-                    <th>SLA Deadline</th>
-                    <th>Assigned Agent</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredEscalations.map((esc) => {
-                    const isOverdue = new Date(esc.slaDueAt).getTime() < Date.now();
-                    return (
-                      <tr key={esc.id}>
-                        <td>
-                          <strong>{esc.id}</strong>
-                        </td>
-                        <td>{esc.customerRef}</td>
-                        <td>{esc.category || esc.customerIssue || esc.issueSummary}</td>
-                        <td>
-                          <span
-                            className={`ops-badge ${
-                              esc.priority === "URGENT" || esc.priority === "HIGH"
-                                ? "ops-badge-red"
-                                : "ops-badge-teal"
-                            }`}
-                          >
-                            {esc.priority}
-                          </span>
-                        </td>
-                        <td>
-                          <span style={{ color: isOverdue ? "#ef4444" : "inherit" }}>
-                            {new Date(esc.slaDueAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}
-                            {isOverdue && " (Breached)"}
-                          </span>
-                        </td>
-                        <td>{esc.assignedAgentId || <span style={{ color: "var(--ops-muted)" }}>Unassigned</span>}</td>
-                        <td>
-                          <StatusPill value={esc.status} />
-                        </td>
-                        <td>
-                          <div style={{ display: "flex", gap: "0.25rem" }}>
-                            {esc.status !== "RESOLVED" && (
-                              <>
-                                <button
-                                  className="ops-button ops-button-sm"
-                                  onClick={() => {
-                                    setSelectedCase(esc);
-                                    setAssignModalOpen(true);
-                                  }}
-                                >
-                                  Assign
-                                </button>
-                                <button
-                                  className="ops-button ops-button-sm ops-button-primary"
-                                  onClick={() => {
-                                    setSelectedCase(esc);
-                                    setResolveModalOpen(true);
-                                  }}
-                                >
-                                  Resolve
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* TAB 2: SCHEDULED CALLBACKS */}
-      {activeTab === "callbacks" && (
-        <div className="ops-card">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-            <h3 style={{ margin: 0 }}>Governed Customer Callbacks</h3>
-            <span className="ops-badge ops-badge-teal">TRAI Calling Window: 09:00 - 19:00 IST</span>
-          </div>
-
-          {callbacks.length === 0 ? (
-            <div className="ops-empty-state" style={{ padding: "3rem 1rem", textAlign: "center" }}>
-              <ClockAfternoon size={48} style={{ color: "var(--ops-muted)", marginBottom: "0.75rem" }} />
-              <h3 style={{ margin: "0 0 0.5rem 0" }}>No Callbacks Scheduled</h3>
-              <p style={{ color: "var(--ops-muted)", maxWidth: "420px", margin: "0 auto" }}>
-                No customer callbacks are currently booked. Callbacks scheduled during voice interactions will queue here automatically.
-              </p>
-            </div>
-          ) : (
-            <div className="ops-table-wrapper">
-              <table className="ops-table">
-                <thead>
-                  <tr>
-                    <th>Callback ID</th>
-                    <th>Customer</th>
-                    <th>Scheduled Slot</th>
-                    <th>Reason</th>
-                    <th>Assigned Agent</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {callbacks.map((cb) => (
-                    <tr key={cb.id}>
-                      <td>
-                        <strong>{cb.id}</strong>
-                      </td>
-                      <td>{cb.customerRef}</td>
-                      <td>
-                        <strong>{cb.preferredAt}</strong>
-                      </td>
-                      <td>{cb.reason}</td>
-                      <td>{cb.assignedAgentId || "Subbu Queue"}</td>
-                      <td>
-                        <StatusPill value={cb.status} />
-                      </td>
-                      <td>
-                        <div style={{ display: "flex", gap: "0.25rem" }}>
-                          {cb.status !== "COMPLETED" && (
-                            <>
-                              <button
-                                className="ops-button ops-button-sm"
-                                onClick={() => {
-                                  setSelectedCallback(cb);
-                                  setRescheduleTime(cb.preferredAt || "Tomorrow 3:00 PM");
-                                  setRescheduleModalOpen(true);
-                                }}
-                              >
-                                <PencilSimple size={13} /> Reschedule
-                              </button>
-                              <button
-                                className="ops-button ops-button-sm"
-                                onClick={() => handleCancelCallback(cb)}
-                              >
-                                <X size={13} /> Cancel
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ASSIGN MODAL */}
-      {assignModalOpen && selectedCase && (
-        <div className="ops-modal-backdrop" onClick={() => setAssignModalOpen(false)}>
-          <div className="ops-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "420px" }}>
-            <h3 style={{ margin: "0 0 1rem 0" }}>Assign Case {selectedCase.id}</h3>
-            <form onSubmit={handleAssignSubmit}>
-              <div style={{ marginBottom: "1rem" }}>
-                <label style={{ display: "block", fontSize: "0.85rem", marginBottom: "0.25rem" }}>
-                  Select Representative:
-                </label>
-                <select
-                  className="ops-select"
-                  style={{ width: "100%" }}
-                  value={assignedAgent}
-                  onChange={(e) => setAssignedAgent(e.target.value)}
-                >
-                  <option value="AG-001">Priya Sharma · Tier 2 Support</option>
-                  <option value="AG-002">Rahul Verma · Account Desk</option>
-                  <option value="AG-003">Amit Patel · Dispute Operations</option>
-                </select>
-              </div>
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
-                <button type="button" className="ops-button" onClick={() => setAssignModalOpen(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="ops-button ops-button-primary" disabled={actionLoading}>
-                  Confirm Assignment
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* RESOLVE MODAL */}
-      {resolveModalOpen && selectedCase && (
-        <div className="ops-modal-backdrop" onClick={() => setResolveModalOpen(false)}>
-          <div className="ops-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "460px" }}>
-            <h3 style={{ margin: "0 0 1rem 0" }}>Resolve Case {selectedCase.id}</h3>
-            <form onSubmit={handleResolveSubmit}>
-              <div style={{ marginBottom: "1rem" }}>
-                <label style={{ display: "block", fontSize: "0.85rem", marginBottom: "0.25rem" }}>
-                  Resolution Notes & Audit Summary:
-                </label>
-                <textarea
-                  className="ops-input"
-                  style={{ width: "100%", height: "80px" }}
-                  value={resolveNotes}
-                  onChange={(e) => setResolveNotes(e.target.value)}
-                  placeholder="App update guide provided; customer confirmed login restored."
-                  required
-                />
-              </div>
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
-                <button type="button" className="ops-button" onClick={() => setResolveModalOpen(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="ops-button ops-button-primary" disabled={actionLoading}>
-                  Mark Case Resolved
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* RESCHEDULE MODAL */}
-      {rescheduleModalOpen && selectedCallback && (
-        <div className="ops-modal-backdrop" onClick={() => setRescheduleModalOpen(false)}>
-          <div className="ops-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "420px" }}>
-            <h3 style={{ margin: "0 0 1rem 0" }}>Reschedule Callback {selectedCallback.id}</h3>
-            <form onSubmit={handleRescheduleSubmit}>
-              <div style={{ marginBottom: "1rem" }}>
-                <label style={{ display: "block", fontSize: "0.85rem", marginBottom: "0.25rem" }}>
-                  New Local Time Slot (IST):
-                </label>
-                <input
-                  type="datetime-local"
-                  className="ops-input"
-                  style={{ width: "100%" }}
-                  value={rescheduleTime}
-                  onChange={(e) => setRescheduleTime(e.target.value)}
-                  required
-                />
-              </div>
-              <p style={{ fontSize: "0.8rem", color: "var(--ops-muted)", marginBottom: "1rem" }}>
-                Times are your browser's local time. The bank's calling window, Sundays and holidays are enforced; the previous slot is invalidated.
-              </p>
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
-                <button type="button" className="ops-button" onClick={() => setRescheduleModalOpen(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="ops-button ops-button-primary" disabled={actionLoading}>
-                  Confirm Reschedule
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-    </div>
+            <div className="table-wrap"><table className="t"><thead><tr><th>Case</th><th>Priority</th><th>Status</th><th>Owner</th><th>SLA</th></tr></thead><tbody>
+              {caseRows.map((c) => (
+                <tr key={c.id} className="click" tabIndex={0} onClick={() => setParams({ tab: "cases", case: c.id })} onKeyDown={(e) => e.key === "Enter" && setParams({ tab: "cases", case: c.id })}>
+                  <td className="primary-cell"><b>{titleCase(c.category)}</b><span>{c.id} · {c.customer_name ?? c.customer_ref}</span></td>
+                  <td><Badge value={c.priority?.toUpperCase()} /></td><td><Badge value={c.status} /></td>
+                  <td>{c.assigned_agent_name ?? <span className="muted">Unassigned</span>}</td>
+                  <td><span className={`badge ${c.sla_breached ? "bad" : "plain"} num`}>{fmtRelative(c.sla_due_at)}</span></td>
+                </tr>
+              ))}
+            </tbody></table></div>
+          )
+        ) : callbacks.error ? <div style={{ padding: 12 }}><ErrorNote error={callbacks.error} onRetry={callbacks.reload} /></div> : callbacks.loading ? <Loading /> : cbs.length === 0 ? (
+          <Empty icon={<CalendarCheck size={20} />} title="No callbacks waiting" text="Callbacks booked by customers or staff appear here with their agreed time." />
+        ) : (
+          <div className="table-wrap"><table className="t"><thead><tr><th>Customer</th><th>When</th><th>Status</th><th>Owner</th><th>Attempts</th></tr></thead><tbody>
+            {cbs.map((c) => (
+              <tr key={c.id} className="click" tabIndex={0} onClick={() => setCbOpen(c)} onKeyDown={(e) => e.key === "Enter" && setCbOpen(c)}>
+                <td className="primary-cell"><b>{c.customer_name ?? c.customer_ref}</b><span>{c.id}{c.case_id ? ` · ${c.case_id}` : ""}</span></td>
+                <td className="num">{c.scheduled_at_utc ? <>{fmtDateTime(c.scheduled_at_utc)}<div className="small muted">{fmtRelative(c.scheduled_at_utc)}</div></> : <span className="muted">Time not agreed</span>}</td>
+                <td><Badge value={c.status} /></td><td>{c.assigned_agent_name ?? <span className="muted">Unassigned</span>}</td><td className="num">{c.attempt_count}</td>
+              </tr>
+            ))}
+          </tbody></table></div>
+        )}
+      </Panel>
+      {caseId && <CaseDrawer id={caseId} onClose={() => setParams({ tab: "cases" })} onChanged={refresh} />}
+      {cbOpen && <CallbackDrawer cb={cbOpen} onClose={() => setCbOpen(null)} onChanged={() => { refresh(); setCbOpen(null); }} />}
+    </>
   );
 }

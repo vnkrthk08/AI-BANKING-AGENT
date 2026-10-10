@@ -36,7 +36,7 @@ def main() -> None:
             page.get_by_label("Username").fill(a.user)
             page.get_by_label("Password").fill(a.password)
             page.get_by_role("button", name="Sign in").click()
-            page.wait_for_selector(".ops-user-chip", timeout=15000)
+            page.wait_for_selector(".user", timeout=15000)
             if vp == "desktop":
                 page.screenshot(path=str(out / "00_after_login.png"))
             for name, path in HUBS:

@@ -1,471 +1,101 @@
-import {
-  Bell,
-  Briefcase,
-  CaretLeft,
-  CaretRight,
-  ChartLineUp,
-  Clock,
-  FileText,
-  House,
-  ListChecks,
-  MagnifyingGlass,
-  Megaphone,
-  Moon,
-  Phone,
-  ShieldCheck,
-  SidebarSimple,
-  Sun,
-  UsersThree,
-  WarningCircle,
-  Waveform,
-} from "@phosphor-icons/react";
-import { useEffect, useMemo, useState } from "react";
-import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { ROLE_ACCESS, ROUTES, type RouteKey } from "../config/permissions";
-import { FilterBar } from "./FilterBar";
-import { useDashboard } from "../hooks/DashboardContext";
+import { useEffect, useState, type ReactElement } from "react";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { Bell, ChartBar, Headset, List, Megaphone, Moon, Phone, ShieldCheck, SignOut, Sun, Tray, UsersThree } from "@phosphor-icons/react";
+import { ROLE_ACCESS, type RouteKey } from "../config/permissions";
 import { useRole } from "../hooks/useRole";
 import { useAuth } from "../auth/AuthContext";
+import { useApi } from "../hooks/useApi";
 import { apiJson } from "../services/http";
+import { fmtRelative } from "./ui";
 
-/** Sidebar status derived from the backend's real component checks (never a hardcoded "online"). */
-function SystemStatus() {
-  const [state, setState] = useState<{ tone: string; text: string }>({ tone: "unknown", text: "Checking services…" });
-  useEffect(() => {
-    let alive = true;
-    const load = () => apiJson<{ components: { key: string; status: string }[]; dialing: { stopped: boolean } }>("/api/system/health")
-      .then((h) => {
-        if (!alive) return;
-        const db = h.components.find((c) => c.key === "database")?.status;
-        const voice = ["stt", "tts"].every((k) => h.components.find((c) => c.key === k)?.status === "CONFIGURED");
-        const tel = h.components.find((c) => c.key === "telephony")?.status;
-        if (db !== "HEALTHY") setState({ tone: "bad", text: "Database issue" });
-        else if (h.dialing.stopped) setState({ tone: "warn", text: "Dialing stopped" });
-        else setState({ tone: voice ? "ok" : "warn", text: `${voice ? "Voice ready" : "Voice not configured"} · Telephony ${tel === "HEALTHY" ? "live" : "off"}` });
-      })
-      .catch(() => alive && setState({ tone: "bad", text: "Backend unreachable" }));
-    load();
-    const t = window.setInterval(load, 60000);
-    return () => { alive = false; window.clearInterval(t); };
-  }, []);
-  return <div className={`ops-live-status tone-${state.tone}`} role="status"><i /><span>{state.text}</span></div>;
-}
-import { kuralApi, type AppNotification } from "../services/kuralApi";
+const NAV: { key: RouteKey; to: string; label: string; icon: ReactElement; group: string }[] = [
+  { key: "executive", to: "/executive", label: "Overview", icon: <ChartBar size={18} />, group: "Operate" },
+  { key: "test-console", to: "/test-console", label: "Voice Studio", icon: <Headset size={18} />, group: "Operate" },
+  { key: "calls", to: "/calls", label: "Calls", icon: <Phone size={18} />, group: "Operate" },
+  { key: "work", to: "/work", label: "Work Queue", icon: <Tray size={18} />, group: "Operate" },
+  { key: "campaigns", to: "/campaigns", label: "Campaigns", icon: <Megaphone size={18} />, group: "Manage" },
+  { key: "team", to: "/team", label: "Team", icon: <UsersThree size={18} />, group: "Manage" },
+  { key: "governance", to: "/governance", label: "Governance", icon: <ShieldCheck size={18} />, group: "Control" },
+];
 
-const icons: Record<RouteKey, React.ReactNode> = {
-  executive: <House size={18} />,
-  "test-console": <Waveform size={18} />,
-  calls: <Phone size={18} />,
-  campaigns: <Megaphone size={18} />,
-  work: <WarningCircle size={18} />,
-  team: <UsersThree size={18} />,
-  governance: <ShieldCheck size={18} />,
-  // legacy icons for safety
-  "my-work": <Briefcase size={18} />,
-  "live-calls": <Phone size={18} />,
-  "call-log": <ListChecks size={18} />,
-  "customer-journey": <ChartLineUp size={18} />,
-  callbacks: <Clock size={18} />,
-  escalations: <WarningCircle size={18} />,
-  insights: <ChartLineUp size={18} />,
-  reports: <FileText size={18} />,
-  compliance: <ShieldCheck size={18} />,
-  "system-health": <Waveform size={18} />,
-};
+interface Health { components: { key: string; status: string }[]; dialing: { stopped: boolean } }
+interface Notif { id: string; title: string; message: string; is_read: boolean; created_at: string; link_url: string | null }
 
-export function AppShell() {
-  const [role] = useRole();
-  const { user, logout } = useAuth();
-  const [collapsed, setCollapsed] = useState(false);
-  const [dark, setDark] = useState(() => localStorage.getItem("kural-ops-theme") === "dark");
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [search, setSearch] = useState("");
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [clock, setClock] = useState(() => new Date());
-
-  // Real backend in-app notifications
-  const [apiNotifications, setApiNotifications] = useState<AppNotification[]>([]);
-  const [unreadCount, setUnreadCount] = useState(0);
-
-  const { snapshot } = useDashboard();
-  const location = useLocation();
-  const navigate = useNavigate();
-  const access = ROLE_ACCESS[role];
-  const route = (Object.keys(ROUTES) as RouteKey[]).find((key) => ROUTES[key].path === location.pathname);
-  const usesFilters = route === "executive" || route === "calls" || route === "live-calls" || route === "call-log" || route === "insights";
-
-  // Poll real notifications
-  useEffect(() => {
-    function fetchNotifs() {
-      kuralApi
-        .getNotifications()
-        .then((res) => {
-          setApiNotifications(res.notifications || []);
-          setUnreadCount(res.unread_count || 0);
-        })
-        .catch(() => {});
-    }
-    fetchNotifs();
-    const timer = window.setInterval(fetchNotifs, 10000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const searchResults = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (query.length < 2 || !snapshot) return [];
-    return snapshot.calls
-      .filter((call) =>
-        role !== "AGENT" ||
-        snapshot.escalations.some((item) => item.callId === call.id && (!item.assignedAgentId || item.assignedAgentId === "AG-001"))
-      )
-      .filter(
-        (call) =>
-          call.id.toLowerCase().includes(query) ||
-          call.customerRef.toLowerCase().includes(query) ||
-          call.maskedPhone.toLowerCase().includes(query) ||
-          call.campaignName.toLowerCase().includes(query)
-      )
-      .slice(0, 6);
-  }, [role, search, snapshot]);
-
-  useEffect(() => {
-    const interval = window.setInterval(() => setClock(new Date()), 30_000);
-    const hotkey = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        setSearchOpen((open) => !open);
-      }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "b") {
-        event.preventDefault();
-        setCollapsed((c) => !c);
-      }
-      if (event.key === "Escape") {
-        setSearchOpen(false);
-        setNotificationsOpen(false);
-      }
-    };
-    window.addEventListener("keydown", hotkey);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener("keydown", hotkey);
-    };
-  }, []);
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = dark ? "dark" : "light";
-  }, [dark]);
-
-
-  function openSearchResult(callId: string) {
-    setSearchOpen(false);
-    navigate(`/calls?query=${encodeURIComponent(callId)}`);
-  }
-
-  async function handleMarkAllRead() {
-    await kuralApi.markAllNotificationsRead().catch(() => {});
-    setUnreadCount(0);
-    setApiNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
-  }
-
-  async function handleNotificationClick(n: AppNotification) {
-    if (!n.is_read) {
-      kuralApi.markNotificationRead(n.id).catch(() => {});
-      setUnreadCount((c) => Math.max(0, c - 1));
-      setApiNotifications((prev) => prev.map((item) => (item.id === n.id ? { ...item, is_read: true } : item)));
-    }
-    setNotificationsOpen(false);
-    if (n.link_url) {
-      navigate(n.link_url);
-    } else if (n.category === "CALLBACK" || n.category === "ESCALATION") {
-      navigate("/work");
-    } else if (n.category === "TELEPHONY") {
-      navigate("/calls");
-    }
-  }
-
-  const groups = ["WORKSPACE", "MANAGE", "GOVERNANCE"] as const;
-
+function StatusLine() {
+  const { data, error } = useApi<Health>("/api/system/health");
+  if (error) return <div className="badge bad">Backend unreachable</div>;
+  if (!data) return <div className="badge plain">Checking services…</div>;
+  const st = (k: string) => data.components.find((c) => c.key === k)?.status;
+  const voice = st("stt") === "CONFIGURED" && st("tts") === "CONFIGURED";
   return (
-    <div className={`ops-app ${collapsed ? "ops-sidebar-collapsed" : ""}`}>
-      {/* SIDEBAR NAVIGATION RAIL */}
-      <aside className="ops-sidebar">
-        <Link
-          className="ops-brand"
-          to={ROUTES[access.home].path}
-          onClick={
-            collapsed
-              ? (e) => {
-                  e.preventDefault();
-                  setCollapsed(false);
-                }
-              : undefined
-          }
-          title={collapsed ? "Expand sidebar" : undefined}
-        >
-          <span className="ops-brand-mark">K</span>
-          <span className="ops-brand-copy">
-            <strong>KURAL</strong>
-            <small>OPERATIONS</small>
-          </span>
-        </Link>
-        <div
-          className="ops-workspace-switch"
-          onClick={collapsed ? () => setCollapsed(false) : undefined}
-          style={collapsed ? { cursor: "pointer" } : undefined}
-          title={collapsed ? "Expand sidebar" : undefined}
-        >
-          <span className="ops-bank-avatar">TB</span>
-          <span>
-            <strong>Town Bank</strong>
-            <small>Operations Hub · India</small>
-          </span>
-          <CaretRight size={15} />
-        </div>
-        <nav className="ops-nav" aria-label="Main navigation">
-          {groups.map((group) => {
-            const links = access.routes.filter(
-              (key) => ROUTES[key].section === group && ["executive", "test-console", "calls", "campaigns", "work", "team", "governance"].includes(key)
-            );
-            if (!links.length) return null;
-            return (
-              <div className="ops-nav-group" key={group}>
-                <span className="ops-nav-group-title">{group}</span>
-                {links.map((key) => {
-                  const active = route === key || (key === "calls" && (route === "live-calls" || route === "call-log" || route === "customer-journey")) || (key === "work" && (route === "escalations" || route === "callbacks"));
-                  return (
-                    <Link
-                      key={key}
-                      to={ROUTES[key].path}
-                      className={`ops-nav-link ${active ? "active" : ""}`}
-                      title={collapsed ? ROUTES[key].label : undefined}
-                      aria-current={active ? "page" : undefined}
-                    >
-                      <span className="ops-nav-icon">{icons[key]}</span>
-                      <span className="ops-nav-label">{ROUTES[key].label}</span>
-                      {key === "work" && unreadCount > 0 && <span className="ops-nav-count">{unreadCount}</span>}
-                    </Link>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </nav>
-        <div className="ops-sidebar-bottom">
-          <SystemStatus />
-          <button
-            className="ops-collapse"
-            onClick={() => setCollapsed((value) => !value)}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            title={collapsed ? "Expand menu (Ctrl + B)" : "Collapse menu (Ctrl + B)"}
-          >
-            {collapsed ? (
-              <CaretRight size={18} weight="bold" />
-            ) : (
-              <>
-                <CaretLeft size={18} weight="bold" />
-                <span>Collapse menu</span>
-              </>
-            )}
-          </button>
-        </div>
-      </aside>
+    <>
+      <span className={`badge ${st("database") === "HEALTHY" ? "ok" : "bad"}`}>Database {st("database") === "HEALTHY" ? "healthy" : "issue"}</span>
+      <span className={`badge ${voice ? "ok" : "warn"}`}>Voice {voice ? "configured" : "not configured"}</span>
+      <span className={`badge ${st("telephony") === "HEALTHY" ? "ok" : ""}`}>Telephony {st("telephony") === "HEALTHY" ? "live" : "off"}</span>
+      {data.dialing.stopped && <span className="badge bad">Dialing stopped</span>}
+    </>
+  );
+}
 
-      {/* MAIN VIEWPORT */}
-      <div className="ops-main">
-        <header className="ops-topbar">
-          <div className="ops-breadcrumb">
-            <button
-              className="ops-icon-button ops-sidebar-toggle-btn"
-              onClick={() => setCollapsed((v) => !v)}
-              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-              title={collapsed ? "Expand sidebar (Ctrl + B)" : "Collapse sidebar (Ctrl + B)"}
-            >
-              <SidebarSimple size={18} weight={collapsed ? "fill" : "regular"} />
-            </button>
-            <span>Town Bank</span>
-            <span>/</span>
-            <strong>{route ? ROUTES[route].label : "Operations Hub"}</strong>
-          </div>
-          <div className="ops-topbar-tools">
-            <button className="ops-search-trigger" onClick={() => setSearchOpen((open) => !open)}>
-              <MagnifyingGlass size={16} />
-              <span>Search calls, customers…</span>
-              <kbd>Ctrl K</kbd>
-            </button>
-            <span className="ops-clock">
-              <Clock size={15} />
-              <time>
-                {new Intl.DateTimeFormat("en-IN", {
-                  timeZone: "Asia/Kolkata",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  hour12: true,
-                }).format(clock)}{" "}
-                IST
-              </time>
-            </span>
-
-            {/* NOTIFICATIONS POPOVER */}
-            <div className="ops-notice-wrap" style={{ position: "relative" }}>
-              <button
-                className="ops-icon-button ops-notification-button"
-                onClick={() => setNotificationsOpen((open) => !open)}
-                aria-label={`${unreadCount} notifications`}
-              >
-                <Bell size={18} />
-                {unreadCount > 0 && <i>{Math.min(unreadCount, 99)}</i>}
-              </button>
-              {notificationsOpen && (
-                <div
-                  className="ops-notification-popover"
-                  style={{
-                    position: "absolute",
-                    top: "120%",
-                    right: 0,
-                    width: "360px",
-                    background: "var(--ops-card, #0f172a)",
-                    border: "1px solid var(--ops-border, rgba(255, 255, 255, 0.12))",
-                    borderRadius: "12px",
-                    boxShadow: "0 12px 32px rgba(0, 0, 0, 0.5)",
-                    zIndex: 100,
-                    padding: "16px",
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      marginBottom: "12px",
-                      paddingBottom: "8px",
-                      borderBottom: "1px solid var(--ops-border, rgba(255, 255, 255, 0.08))",
-                    }}
-                  >
-                    <div className="ops-popover-title" style={{ margin: 0, fontWeight: 700 }}>
-                      Operations Alerts <span>({unreadCount})</span>
-                    </div>
-                    {unreadCount > 0 && (
-                      <button
-                        className="ops-button ops-button-sm"
-                        onClick={handleMarkAllRead}
-                        style={{ fontSize: "11px", padding: "2px 8px" }}
-                      >
-                        Mark All Read
-                      </button>
-                    )}
-                  </div>
-                  <div style={{ maxHeight: "280px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {apiNotifications.length === 0 ? (
-                      <p style={{ color: "var(--ops-muted)", fontSize: "12.5px", textAlign: "center", padding: "16px 0" }}>
-                        No notifications right now. System operating normally.
-                      </p>
-                    ) : (
-                      apiNotifications.map((n) => (
-                        <div
-                          key={n.id}
-                          onClick={() => handleNotificationClick(n)}
-                          style={{
-                            padding: "8px 10px",
-                            borderRadius: "6px",
-                            background: n.is_read ? "transparent" : "rgba(13, 148, 136, 0.12)",
-                            borderLeft: `3px solid ${
-                              n.level === "WARNING" ? "#f59e0b" : n.level === "ERROR" ? "#ef4444" : "#10b981"
-                            }`,
-                            cursor: "pointer",
-                            fontSize: "12px",
-                          }}
-                        >
-                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "2px" }}>
-                            <strong>{n.title}</strong>
-                            <small style={{ color: "var(--ops-muted)" }}>
-                              {n.created_at ? new Date(n.created_at).toLocaleTimeString("en-IN") : ""}
-                            </small>
-                          </div>
-                          <div style={{ color: "var(--ops-text)" }}>{n.message}</div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <button
-              className="ops-icon-button"
-              aria-label={dark ? "Switch to light theme" : "Switch to dark theme"}
-              onClick={() => {
-                const next = !dark;
-                setDark(next);
-                localStorage.setItem("kural-ops-theme", next ? "dark" : "light");
-              }}
-            >
-              {dark ? <Sun size={17} /> : <Moon size={17} />}
-            </button>
-            <div className="ops-user-chip" title={user?.username}>
-              <div className="ops-user-avatar" aria-hidden="true">{(user?.full_name || user?.username || "?").split(" ").map((p) => p[0]).join("").slice(0, 2).toUpperCase()}</div>
-              <div className="ops-user-meta"><strong>{user?.full_name || user?.username}</strong><span>{ROLE_ACCESS[role].label}</span></div>
-              <button className="ops-signout" onClick={() => void logout()}>Sign out</button>
-            </div>
-          </div>
-        </header>
-
-        {usesFilters && <FilterBar />}
-        <div className="ops-content">
-          <Outlet context={{ role }} />
-        </div>
-        <footer className="ops-footer">
-          <span>
-            <i /> Town Bank operations console
-          </span>
-          <span>All timestamps Asia/Kolkata (IST)</span>
-        </footer>
-      </div>
-
-      {/* SEARCH LAYER */}
-      {searchOpen && (
-        <div
-          className="ops-search-layer"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setSearchOpen(false);
-          }}
-        >
-          <section className="ops-search-dialog" role="dialog" aria-modal="true" aria-label="Search calls">
-            <div className="ops-search-input-row">
-              <MagnifyingGlass size={20} />
-              <input
-                autoFocus
-                placeholder="Search masked customers, calls or campaigns"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && searchResults[0]) openSearchResult(searchResults[0].id);
-                }}
-              />
-              <kbd>ESC</kbd>
-            </div>
-            <div className="ops-search-results">
-              {search.length < 2 ? (
-                <p>Search by call ID, customer reference, masked number or campaign.</p>
-              ) : searchResults.length ? (
-                searchResults.map((call) => (
-                  <button key={call.id} onClick={() => openSearchResult(call.id)}>
-                    <span>
-                      <strong>{call.id}</strong>
-                      <small>
-                        {call.customerRef} · {call.maskedPhone}
-                      </small>
-                    </span>
-                    <span>{call.campaignName}</span>
-                  </button>
-                ))
-              ) : (
-                <p>No matching masked records.</p>
-              )}
-            </div>
-          </section>
+function Inbox() {
+  const [open, setOpen] = useState(false);
+  const { data, reload } = useApi<{ notifications: Notif[]; unread_count: number }>("/api/notifications?limit=20");
+  const markAll = async () => { await apiJson("/api/notifications/read-all", { method: "POST" }); void reload(); };
+  return (
+    <div style={{ position: "relative" }}>
+      <button className="icon-btn" aria-label={`Notifications (${data?.unread_count ?? 0} unread)`} onClick={() => setOpen((v) => !v)}>
+        <Bell size={18} />{(data?.unread_count ?? 0) > 0 && <span className="dot" />}
+      </button>
+      {open && (
+        <div className="popover" role="dialog" aria-label="Notifications">
+          <div className="popover-head"><span>Notifications</span>{(data?.unread_count ?? 0) > 0 && <button className="btn sm ghost" onClick={markAll}>Mark all read</button>}</div>
+          {!data?.notifications.length && <div className="empty" style={{ padding: 28 }}><p>No notifications yet.</p></div>}
+          {data?.notifications.map((n) => (
+            <div key={n.id} className={`notif ${n.is_read ? "" : "unread"}`}><b>{n.title}</b><div>{n.message}</div><small>{fmtRelative(n.created_at)}</small></div>
+          ))}
         </div>
       )}
     </div>
   );
 }
+
+export function AppShell() {
+  const [role] = useRole();
+  const { user, logout } = useAuth();
+  const location = useLocation();
+  const [navOpen, setNavOpen] = useState(false);
+  const [dark, setDark] = useState(() => { try { return localStorage.getItem("kural-theme") === "dark"; } catch { return false; } });
+  useEffect(() => { document.documentElement.dataset.theme = dark ? "dark" : "light"; try { localStorage.setItem("kural-theme", dark ? "dark" : "light"); } catch { /* ignore */ } }, [dark]);
+  useEffect(() => setNavOpen(false), [location.pathname]);
+  const allowed = ROLE_ACCESS[role].routes;
+  const items = NAV.filter((n) => allowed.includes(n.key));
+  const current = NAV.find((n) => location.pathname.startsWith(n.to));
+  const initials = (user?.full_name || user?.username || "?").split(" ").map((p) => p[0]).join("").slice(0, 2).toUpperCase();
+  return (
+    <div className={`app ${navOpen ? "nav-open" : ""}`}>
+      <aside className="side" aria-label="Primary">
+        <div className="side-brand"><span className="side-mark">K</span><div><b>KURAL AVA</b><small>Town Bank · Operations</small></div></div>
+        {["Operate", "Manage", "Control"].map((g) => {
+          const group = items.filter((i) => i.group === g);
+          if (!group.length) return null;
+          return <div key={g}><div className="side-label">{g}</div>{group.map((i) => <NavLink key={i.key} to={i.to} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>{i.icon}<span>{i.label}</span></NavLink>)}</div>;
+        })}
+        <div className="side-foot"><span>{user?.branch}</span><span style={{ color: "#6f82a0" }}>All times IST</span></div>
+      </aside>
+      <div className="main" onClick={() => navOpen && setNavOpen(false)}>
+        <header className="topbar">
+          <button className="icon-btn menu-btn" aria-label="Open navigation" onClick={(e) => { e.stopPropagation(); setNavOpen(true); }}><List size={20} /></button>
+          <span className="crumb">{current?.label ?? "KURAL AVA"}</span>
+          <span className="spacer" />
+          <Inbox />
+          <button className="icon-btn" aria-label="Toggle theme" onClick={() => setDark((v) => !v)}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button>
+          <div className="user"><span className="avatar">{initials}</span><div className="user-meta"><b>{user?.full_name || user?.username}</b><span>{ROLE_ACCESS[role].label}</span></div>
+            <button className="icon-btn" aria-label="Sign out" title="Sign out" onClick={() => void logout()}><SignOut size={18} /></button></div>
+        </header>
+        <main className="content"><Outlet /></main>
+      </div>
+    </div>
+  );
+}
+
+export { StatusLine };
