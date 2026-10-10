@@ -27,6 +27,10 @@ from kural.services.customer_service import CustomerService
 from kural.services.report_service import ReportService
 from kural.services.auth_service import AuthService
 from app.routers.auth import auth_router
+from kural.telephony.config import get_telephony_provider
+from kural.telephony.router import telephony_router
+from kural.notifications.service import NotificationService
+from kural.notifications.router import notification_router
 
 
 def create_app(repository: KuralRepository | None = None,
@@ -62,7 +66,19 @@ def create_app(repository: KuralRepository | None = None,
                             ).all()
                             for cb in due:
                                 cb.status = "DUE"
-                                event_bus.publish("callback_due", {"callback_id": cb.callback_id})
+                                event_bus.publish("callback_due", {
+                                    "callback_id": cb.callback_id,
+                                    "customer_ref": cb.customer_ref,
+                                })
+                                notif_svc = getattr(app.state, "notification_service", None)
+                                if notif_svc is not None:
+                                    notif_svc.create_notification(
+                                        title="Customer Callback Due",
+                                        message=f"Callback {cb.callback_id} for customer {cb.customer_ref} is now due.",
+                                        level="WARNING",
+                                        category="CALLBACK",
+                                        link_url="/work",
+                                    )
                             if due:
                                 s.commit()
                 except asyncio.CancelledError:
@@ -71,23 +87,43 @@ def create_app(repository: KuralRepository | None = None,
                     logger.warning("Callback scheduler worker encountered transient error: %s", exc)
 
         async def campaign_pacing_worker():
-            """Polls active campaigns and processes queued contacts in background."""
+            """Polls active campaigns and processes queued contacts via the configured telephony provider."""
+            from kural.policy.calling_policy import is_sunday, is_within_calling_hours
+            from kural.telephony.contracts import TelephonyCallRequest
+
             while not stop_worker.is_set():
                 try:
                     await asyncio.sleep(5)
                     camp_svc = getattr(app.state, "campaign_service", None)
-                    if camp_svc is not None:
+                    telephony = getattr(app.state, "telephony_provider", None)
+                    if camp_svc is not None and telephony is not None and telephony.is_configured:
+                        now_utc = datetime.now(timezone.utc)
+                        if is_sunday(now_utc) or not is_within_calling_hours(now_utc):
+                            continue
+
                         active_camps = camp_svc.list_campaigns(status="ACTIVE")
                         for camp in active_camps:
                             queued = camp_svc.get_queued_contacts(camp["id"], batch_size=2)
                             for contact in queued:
-                                import random
-                                disp = random.choice(["CLOSED", "CLOSED", "CALLBACK_SCHEDULED", "BUSY", "NO_ANSWER"])
-                                camp_svc.record_attempt(contact["contact_id"], disp, f"sim-{contact['contact_id']}")
+                                call_id = f"CMP-{contact['contact_id']}"
+                                req = TelephonyCallRequest(
+                                    to_phone=contact["phone"],
+                                    from_phone=getattr(telephony, "caller_id", "+91 1800 200 4400"),
+                                    customer_ref=contact["customer_ref"],
+                                    call_id=call_id,
+                                    campaign_id=camp["id"],
+                                    metadata={"contact_id": contact["contact_id"]},
+                                )
+                                res = await telephony.initiate_call(req)
+                                disp = "INITIATED" if res.success else "FAILED"
+                                camp_svc.record_attempt(
+                                    contact["contact_id"], disp, res.provider_call_sid or call_id
+                                )
                                 event_bus.publish("campaign_progress", {
                                     "campaign_id": camp["id"],
                                     "contact_id": contact["contact_id"],
                                     "disposition": disp,
+                                    "call_id": call_id,
                                 })
                 except asyncio.CancelledError:
                     break
@@ -139,6 +175,8 @@ def create_app(repository: KuralRepository | None = None,
     app.state.agent_service = AgentService(app.state.database)
     app.state.report_service = ReportService(app.state.database)
     app.state.auth_service = AuthService(app.state.database)
+    app.state.notification_service = NotificationService(app.state.database)
+    app.state.telephony_provider = get_telephony_provider()
 
     app.state.llm_provider = llm_provider if llm_provider is not None else create_llm_provider()
     app.state.stt_provider = stt_provider if stt_provider is not None else create_stt_provider()
@@ -150,6 +188,8 @@ def create_app(repository: KuralRepository | None = None,
     app.include_router(dashboard_router)
     app.include_router(operations_router)
     app.include_router(auth_router)
+    app.include_router(telephony_router)
+    app.include_router(notification_router)
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def root() -> str:

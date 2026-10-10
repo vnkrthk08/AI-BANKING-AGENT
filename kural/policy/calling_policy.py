@@ -4,12 +4,37 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
+from zoneinfo import ZoneInfo
 from sqlalchemy import select, update
 
 from kural.persistence.database import Database
 from kural.persistence.models import CallbackRow, CampaignContactRow, CustomerRow
 
 logger = logging.getLogger("kural.policy.calling")
+
+KOLKATA_TZ = ZoneInfo("Asia/Kolkata")
+
+
+def is_sunday(dt: datetime | None = None) -> bool:
+    """Return True if the given datetime (in Asia/Kolkata timezone) is Sunday."""
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    ist_dt = dt.astimezone(KOLKATA_TZ)
+    return ist_dt.weekday() == 6
+
+
+def is_within_calling_hours(dt: datetime | None = None) -> bool:
+    """Return True if the given datetime (in Asia/Kolkata timezone) falls within
+    the RBI/TRAI compliant window (09:00 AM to 07:00 PM IST / 09:00 - 19:00 IST).
+    """
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    ist_dt = dt.astimezone(KOLKATA_TZ)
+    return 9 <= ist_dt.hour < 19
 
 
 class CallingPolicyEngine:

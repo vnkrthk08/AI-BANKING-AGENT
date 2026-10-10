@@ -398,4 +398,21 @@ class AuditLedgerRow(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
 
 
+class NotificationRow(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    recipient_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    level: Mapped[str] = mapped_column(String(20), default="INFO", nullable=False)
+    category: Mapped[str] = mapped_column(String(40), default="SYSTEM", nullable=False)
+    link_url: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+
 

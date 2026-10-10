@@ -129,11 +129,16 @@ export function TestConsolePage() {
   const callEndingPendingRef = useRef(false);
   const allTtsChunksReceivedRef = useRef(false);
   const endingFinalizeTimerRef = useRef<number | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animFrameRef = useRef<number | null>(null);
 
   const [online, setOnline] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [voiceState, setVoiceState] = useState<VoiceState>("READY");
+  const [audioEnergy, setAudioEnergy] = useState(0);
+  const [audioDb, setAudioDb] = useState(-60);
+
   const [kuralState, setKuralState] = useState("DISCLOSURE");
   const [intent, setIntent] = useState("");
   const [policy, setPolicy] = useState<PolicyDecision | null>(null);
@@ -237,6 +242,14 @@ export function TestConsolePage() {
   }
 
   function stopMicrophone() {
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    analyserRef.current?.disconnect();
+    analyserRef.current = null;
+    setAudioEnergy(0);
+    setAudioDb(-60);
     captureNodeRef.current?.disconnect();
     captureNodeRef.current = null;
     micStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -684,6 +697,39 @@ export function TestConsolePage() {
 
       await context.audioWorklet.addModule("/pcm-capture-worklet.js");
       const source = context.createMediaStreamSource(stream);
+
+      // Real-time Web Audio AnalyserNode for true dB / energy meter
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.3;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+
+      const pcmData = new Uint8Array(analyser.frequencyBinCount);
+      const monitorEnergy = () => {
+        if (!micStreamRef.current) return;
+        analyser.getByteFrequencyData(pcmData);
+        let sum = 0;
+        for (let i = 0; i < pcmData.length; i++) {
+          sum += pcmData[i];
+        }
+        const avg = sum / pcmData.length;
+        const energy = Math.min(100, Math.round((avg / 128) * 100));
+        const db = avg > 0 ? Math.max(-60, Math.round(20 * Math.log10(avg / 255))) : -60;
+        setAudioEnergy(energy);
+        setAudioDb(db);
+
+        // Natural client-side barge-in: If user speaks (>20% energy) while Subbu is actively playing audio
+        if (energy > 20 && playingSourcesRef.current.size > 0) {
+          stopPlayback();
+          voiceConnectionRef.current?.sendPlaybackStatus("idle");
+          setVoiceState("LISTENING");
+        }
+
+        animFrameRef.current = requestAnimationFrame(monitorEnergy);
+      };
+      animFrameRef.current = requestAnimationFrame(monitorEnergy);
+
       const worklet = new AudioWorkletNode(context, "kural-pcm-capture", {
         numberOfInputs: 1,
         numberOfOutputs: 1,
@@ -1055,45 +1101,112 @@ export function TestConsolePage() {
               gap: "14px",
             }}
           >
-            {/* Visual presence orb */}
-            <div className={`active-orb-box ${connected ? (voiceState === "SPEAKING" ? "speaking" : voiceState === "SILENCE_REMINDER" ? "speaking" : "listening") : ""}`}>
+            {/* Visual presence orb with dynamic aura */}
+            <div
+              className={`active-orb-box ${
+                connected
+                  ? voiceState === "SPEAKING"
+                    ? "speaking"
+                    : voiceState === "SILENCE_REMINDER"
+                    ? "speaking"
+                    : "listening"
+                  : ""
+              }`}
+              style={{ position: "relative" }}
+            >
+              <div
+                className={`fluid-orb-aura ${voiceState === "LISTENING" ? "fluid-orb-listening" : ""}`}
+                style={{
+                  transform: `scale(${1 + (audioEnergy / 100) * 0.35})`,
+                  opacity: connected ? 0.6 + (audioEnergy / 100) * 0.4 : 0,
+                }}
+              />
               <div className="active-orb-halo" />
-              <div className="active-orb">S</div>
+              <div
+                className="active-orb"
+                style={{
+                  transform: `scale(${1 + (audioEnergy / 100) * 0.12})`,
+                  transition: "transform 0.08s ease",
+                }}
+              >
+                {voiceState === "SPEAKING" ? "AVA" : "S"}
+              </div>
             </div>
+
+            {/* True Microphone Input Level (dB / Energy) Meter */}
+            {connected && !isMuted && (
+              <div className="db-meter-container">
+                <div className="db-meter-readout">
+                  <span>INPUT LEVEL</span>
+                  <strong>
+                    {audioDb > -58 ? `${audioDb} dB` : "-∞ dB"} ({audioEnergy}%)
+                  </strong>
+                </div>
+                <div className="db-meter-tracks" title={`Microphone Input Level: ${audioDb} dB`}>
+                  {Array.from({ length: 14 }).map((_, idx) => {
+                    const threshold = (idx + 1) * (100 / 14);
+                    const isActive = audioEnergy >= threshold;
+                    const isRed = idx >= 11;
+                    const isAmber = idx >= 8 && idx < 11;
+                    const segmentClass = isActive
+                      ? isRed
+                        ? "active-red"
+                        : isAmber
+                        ? "active-amber"
+                        : "active-green"
+                      : "";
+                    return <div key={idx} className={`db-meter-segment ${segmentClass}`} />;
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Dynamic state caption */}
             <div style={{ textAlign: "center" }}>
-              <div style={{
-                fontSize: "14px",
-                fontWeight: 700,
-                letterSpacing: "0.04em",
-                color: connected
-                  ? (voiceState === "SPEAKING" ? "#38bdf8"
-                    : voiceState === "SILENCE_REMINDER" ? "#fbbf24"
-                    : voiceState === "TERMINATING" ? "#f87171"
-                    : voiceState === "LISTENING" ? "#34d399"
-                    : "#a78bfa")
-                  : "#94a3b8"
-              }}>
-                {connected ? (
-                  voiceState === "SPEAKING" ? "SUBBU IS SPEAKING" :
-                  voiceState === "SILENCE_REMINDER" ? "REMINDING CUSTOMER (NO RESPONSE)" :
-                  voiceState === "TERMINATING" ? "ENDING CALL (NO RESPONSE)" :
-                  voiceState === "LISTENING" ? "LISTENING TO YOU" :
-                  voiceState === "PROCESSING" ? "THINKING & EVALUATING" :
-                  voiceState === "INTERRUPTED" ? "INTERRUPTED" : "CONNECTED"
-                ) : callEnded ? (
-                  intent === "NO_RESPONSE" ? "CALL CONCLUDED · NO RESPONSE" : "INTERACTION CONCLUDED"
-                ) : (
-                  "SUBBU READY TO CALL"
-                )}
+              <div
+                style={{
+                  fontSize: "14px",
+                  fontWeight: 700,
+                  letterSpacing: "0.04em",
+                  color: connected
+                    ? voiceState === "SPEAKING"
+                      ? "#38bdf8"
+                      : voiceState === "SILENCE_REMINDER"
+                      ? "#fbbf24"
+                      : voiceState === "TERMINATING"
+                      ? "#f87171"
+                      : voiceState === "LISTENING"
+                      ? "#34d399"
+                      : "#a78bfa"
+                    : "#94a3b8",
+                }}
+              >
+                {connected
+                  ? voiceState === "SPEAKING"
+                    ? "SUBBU IS SPEAKING"
+                    : voiceState === "SILENCE_REMINDER"
+                    ? "REMINDING CUSTOMER (NO RESPONSE)"
+                    : voiceState === "TERMINATING"
+                    ? "ENDING CALL (NO RESPONSE)"
+                    : voiceState === "LISTENING"
+                    ? "LISTENING TO YOU"
+                    : voiceState === "PROCESSING"
+                    ? "THINKING & EVALUATING"
+                    : voiceState === "INTERRUPTED"
+                    ? "INTERRUPTED"
+                    : "CONNECTED"
+                  : callEnded
+                  ? intent === "NO_RESPONSE"
+                    ? "CALL CONCLUDED · NO RESPONSE"
+                    : "INTERACTION CONCLUDED"
+                  : "SUBBU READY TO CALL"}
               </div>
               <span style={{ fontSize: "11.5px", color: "#64748b" }}>
-                {connected ? (
-                  isMuted ? "Microphone muted" : "Speak naturally · Interruption and barge-in enabled"
-                ) : (
-                  "Town Bank automated voice assistant calling regarding mobile app update"
-                )}
+                {connected
+                  ? isMuted
+                    ? "Microphone muted"
+                    : "Speak naturally · Automatic speech interruption and barge-in active"
+                  : "Town Bank automated voice assistant calling regarding mobile app update"}
               </span>
             </div>
 

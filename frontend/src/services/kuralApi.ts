@@ -207,5 +207,67 @@ export const kuralApi = {
       headers: { "Content-Type": "application/json" },
       body: "{}",
     }),
+  getNotifications: (unreadOnly?: boolean) =>
+    request<{ notifications: AppNotification[]; unread_count: number; total: number }>(
+      "/api/notifications" + (unreadOnly ? "?unread_only=true" : "")
+    ),
+  markNotificationRead: (id: string) =>
+    request<{ success: boolean; id: string }>(`/api/notifications/${encodeURIComponent(id)}/read`, {
+      method: "PATCH",
+    }),
+  markAllNotificationsRead: () =>
+    request<{ success: boolean; marked_count: number }>("/api/notifications/read-all", {
+      method: "POST",
+    }),
+  getNotificationChannels: () =>
+    request<{ channels: NotificationChannelStatus[] }>("/api/notifications/channels"),
+  getTelephonyStatus: () =>
+    request<{
+      provider: string;
+      status: string;
+      is_live: boolean;
+      caller_id: string | null;
+      last_health_check: string | null;
+      last_error: string | null;
+      details: Record<string, unknown>;
+    }>("/api/v1/telephony/status"),
+  dialTelephonyCall: (toPhone: string, customerRef?: string, campaignId?: string) =>
+    request<{
+      success: boolean;
+      call_id: string;
+      provider_call_sid: string;
+      status: string;
+      message: string;
+    }>("/api/v1/telephony/calls", {
+      method: "POST",
+      body: JSON.stringify({
+        to_phone: toPhone,
+        customer_ref: customerRef,
+        campaign_id: campaignId,
+      }),
+    }),
 };
+
+export interface AppNotification {
+  id: string;
+  recipient_role: string | null;
+  user_id: string | null;
+  title: string;
+  message: string;
+  level: "INFO" | "WARNING" | "ERROR" | "SUCCESS";
+  category: "ESCALATION" | "CALLBACK" | "TELEPHONY" | "SYSTEM";
+  link_url: string | null;
+  is_read: boolean;
+  created_at: string;
+  read_at: string | null;
+}
+
+export interface NotificationChannelStatus {
+  channel: string;
+  label: string;
+  status: string;
+  description: string;
+  is_active: boolean;
+}
+
 
