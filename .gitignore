@@ -66,3 +66,6 @@ Thumbs.db
 *.swp
 *.swo
 *.bak
+*.zip
+docs/release-candidate/final-visual-review/
+
