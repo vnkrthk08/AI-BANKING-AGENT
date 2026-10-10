@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   ArrowsClockwise,
   CheckCircle,
@@ -13,7 +14,11 @@ import type { Callback, EscalationCase } from "../types";
 
 export function WorkQueuePage() {
   const { snapshot, refresh } = useDashboard();
-  const [activeTab, setActiveTab] = useState<"escalations" | "callbacks">("escalations");
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const [activeTab, setActiveTab] = useState<"escalations" | "callbacks">(
+    tabParam === "callbacks" ? "callbacks" : "escalations"
+  );
 
   // Modals state
   const [selectedCase, setSelectedCase] = useState<EscalationCase | null>(null);

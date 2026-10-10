@@ -85,16 +85,16 @@ export default function App() {
               </Route>
 
               {/* BACKWARDS-COMPATIBLE LEGACY ROUTES & REDIRECTS */}
-              <Route path="/live-calls" element={<Navigate to="/calls" replace />} />
-              <Route path="/call-log" element={<Navigate to="/calls" replace />} />
-              <Route path="/customer-journey" element={<Navigate to="/calls" replace />} />
-              <Route path="/escalations" element={<Navigate to="/work" replace />} />
-              <Route path="/callbacks" element={<Navigate to="/work" replace />} />
-              <Route path="/my-work" element={<Navigate to="/work" replace />} />
-              <Route path="/compliance" element={<Navigate to="/governance" replace />} />
-              <Route path="/system-health" element={<Navigate to="/governance" replace />} />
-              <Route path="/reports" element={<Navigate to="/governance" replace />} />
-              <Route path="/insights" element={<Navigate to="/governance" replace />} />
+              <Route path="/live-calls" element={<Navigate to="/calls?tab=live" replace />} />
+              <Route path="/call-log" element={<Navigate to="/calls?tab=history" replace />} />
+              <Route path="/customer-journey" element={<Navigate to="/calls?tab=journey" replace />} />
+              <Route path="/escalations" element={<Navigate to="/work?tab=escalations" replace />} />
+              <Route path="/callbacks" element={<Navigate to="/work?tab=callbacks" replace />} />
+              <Route path="/my-work" element={<Navigate to="/work?tab=escalations" replace />} />
+              <Route path="/compliance" element={<Navigate to="/governance?tab=audit" replace />} />
+              <Route path="/system-health" element={<Navigate to="/governance?tab=health" replace />} />
+              <Route path="/reports" element={<Navigate to="/governance?tab=reports" replace />} />
+              <Route path="/insights" element={<Navigate to="/executive" replace />} />
 
               <Route path="*" element={<RoleHome />} />
             </Route>

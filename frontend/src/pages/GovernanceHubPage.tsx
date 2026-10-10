@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   ArrowsClockwise,
   DownloadSimple,
@@ -22,7 +23,17 @@ interface TelephonyStatusData {
 
 export function GovernanceHubPage() {
   const { snapshot, refresh } = useDashboard();
-  const [activeTab, setActiveTab] = useState<"audit" | "health" | "channels" | "reports">("health");
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const [activeTab, setActiveTab] = useState<"audit" | "health" | "channels" | "reports">(
+    tabParam === "audit"
+      ? "audit"
+      : tabParam === "channels"
+      ? "channels"
+      : tabParam === "reports"
+      ? "reports"
+      : "health"
+  );
   const [telephonyStatus, setTelephonyStatus] = useState<TelephonyStatusData | null>(null);
   const [channels, setChannels] = useState<NotificationChannelStatus[]>([]);
   const [loading, setLoading] = useState(false);

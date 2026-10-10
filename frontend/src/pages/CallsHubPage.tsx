@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   ArrowsClockwise,
   Eye,
@@ -17,7 +18,11 @@ import { kuralApi } from "../services/kuralApi";
 export function CallsHubPage() {
   const [role] = useRole();
   const { snapshot, refresh } = useDashboard();
-  const [activeTab, setActiveTab] = useState<"history" | "live" | "journey">("history");
+  const [searchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const [activeTab, setActiveTab] = useState<"history" | "live" | "journey">(
+    tabParam === "live" ? "live" : tabParam === "journey" ? "journey" : "history"
+  );
   const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [dispositionFilter, setDispositionFilter] = useState<string>("ALL");
