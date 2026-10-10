@@ -210,5 +210,10 @@ def test_rbac_enforced_server_side(tmp_path):
         assert client.post("/api/system/dialing", json={"stopped": False}, headers=comp).status_code == 403
         assert client.get("/api/calls/x/recording", headers=agent).status_code == 403
         assert client.post("/api/demo/reset", headers=agent).status_code in (404, 405)
+        from starlette.websockets import WebSocketDisconnect
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/api/v1/voice/realtime?session_id=x") as ws:
+                ws.receive_json()
+        assert client.get("/api/events/sse").status_code == 401
         me = client.get("/api/v1/auth/me", headers=agent).json()["user"]
         assert me["role"] == "AGENT" and "campaign:manage" not in me["permissions"]

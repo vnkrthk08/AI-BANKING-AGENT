@@ -244,7 +244,12 @@ async def submit_streaming_voice_turn(websocket: WebSocket) -> None:
 
 @router.websocket("/voice/realtime")
 async def realtime_voice_call(websocket: WebSocket) -> None:
-    """Persistent PCM microphone/STT/KURAL/TTS call transport."""
+    """Persistent PCM microphone/STT/KURAL/TTS call transport (ticket-authenticated)."""
+    from kural.security.deps import authorize_stream
+    session_q = websocket.query_params.get("session_id", "")
+    if authorize_stream(websocket, session_q, "voice:operate") is None:
+        await websocket.close(code=1008, reason="Authentication ticket required")
+        return
     await websocket.accept()
     try:
         start = await asyncio.wait_for(websocket.receive_json(), timeout=15)
@@ -252,7 +257,7 @@ async def realtime_voice_call(websocket: WebSocket) -> None:
             await websocket.send_json({"type": "voice_error", "detail": "Start a voice call before sending microphone audio."})
             return
         session_id = start.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
+        if not isinstance(session_id, str) or not session_id or session_id != session_q:
             await websocket.send_json({"type": "voice_error", "detail": "A valid KURAL session is required."})
             return
         provider = websocket.app.state.realtime_stt_provider
@@ -495,7 +500,11 @@ async def patch_case(case_id: str, request: Request, principal: Principal = Depe
 # --- Dashboard Real-time Events ---
 @router.get("/events/sse")
 @dashboard_router.get("/events/sse")
-async def sse_events() -> StreamingResponse:
+async def sse_events(request: Request) -> StreamingResponse:
+    from kural.security.deps import authorize_stream
+    if authorize_stream(request, "events", "dashboard:view") is None and authorize_stream(request, "events", "system:read") is None:
+        raise HTTPException(status_code=401, detail="Event stream requires a ticket")
+
     async def sse_stream():
         async for topic, payload in event_bus.subscribe("*"):
             yield f"event: {topic}\ndata: {json.dumps(payload)}\n\n"
@@ -506,6 +515,10 @@ async def sse_events() -> StreamingResponse:
 @router.websocket("/events/ws")
 @dashboard_router.websocket("/events/ws")
 async def ws_events(websocket: WebSocket) -> None:
+    from kural.security.deps import authorize_stream
+    if authorize_stream(websocket, "events", "dashboard:view") is None:
+        await websocket.close(code=1008, reason="Authentication ticket required")
+        return
     await websocket.accept()
     try:
         async for topic, payload in event_bus.subscribe("*"):

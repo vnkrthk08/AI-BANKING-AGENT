@@ -92,6 +92,34 @@ def _check(role: str, permission: str) -> None:
     check_permission(role, permission)
 
 
+def authorize_stream(conn, session_id: str, permission: str) -> Principal | None:
+    """Authenticate a WebSocket/SSE stream with a single-use ticket bound to ``session_id``."""
+    return _resolve_stream_principal(conn, session_id, permission)
+
+
+def _resolve_stream_principal(conn, session_id: str, permission: str) -> Principal | None:
+    from kural.persistence.models import AgentRow, UserRow, WebSocketTicketRow
+    from kural.security.rbac import has_permission
+    from kural.security.token_service import hash_token
+    from kural.services.auth_service import AuthService
+
+    ticket = conn.query_params.get("ticket")
+    db = getattr(conn.app.state, "database", None)
+    if not ticket or db is None:
+        return None
+    with db.session() as s:
+        row = s.get(WebSocketTicketRow, hash_token(ticket))
+        user_id = row.user_id if row else None
+    if user_id is None or not AuthService(db).validate_and_burn_websocket_ticket(ticket, session_id):
+        return None
+    with db.session() as s:
+        user = s.get(UserRow, user_id)
+        if user is None or not user.is_active or not has_permission(user.role, permission):
+            return None
+        agent_id = s.scalar(select(AgentRow.agent_id).where(AgentRow.user_id == user.id))
+        return Principal(user_id=user.id, username=user.username, role=user.role, branch=user.branch, agent_id=agent_id)
+
+
 def client_ip(request: Request) -> str:
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:

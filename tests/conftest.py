@@ -35,6 +35,7 @@ def functional_test_principal(request: pytest.FixtureRequest, monkeypatch: pytes
     principal = deps.Principal(user_id="test-user", username="test.operator", role="OPS_MANAGER", branch="Test")
     monkeypatch.setattr(deps, "_resolve_principal", lambda request, authorization: principal)
     monkeypatch.setattr(deps, "_check", lambda role, permission: None)
+    monkeypatch.setattr(deps, "_resolve_stream_principal", lambda conn, session_id, permission: principal)
 
 
 @pytest.fixture
