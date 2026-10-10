@@ -16,6 +16,7 @@ const CampaignsPage = lazy(() => import("./pages/CampaignsPage").then((m) => ({ 
 const WorkQueuePage = lazy(() => import("./pages/WorkQueuePage").then((m) => ({ default: m.WorkQueuePage })));
 const TeamPage = lazy(() => import("./pages/TeamPage").then((m) => ({ default: m.TeamPage })));
 const GovernanceHubPage = lazy(() => import("./pages/GovernanceHubPage").then((m) => ({ default: m.GovernanceHubPage })));
+const AdminCommandCenterPage = lazy(() => import("./pages/AdminCommandCenterPage").then((m) => ({ default: m.AdminCommandCenterPage })));
 
 function Page({ component: C }: { component: ComponentType }) {
   return <Suspense fallback={<Loading />}><C /></Suspense>;
@@ -48,6 +49,7 @@ export default function App() {
           <Routes>
             <Route element={<AppShell />}>
               <Route path="/" element={<Home />} />
+              <Route element={<Guard page="admin" />}><Route path="/admin" element={<Page component={AdminCommandCenterPage} />} /></Route>
               <Route element={<Guard page="executive" />}><Route path="/executive" element={<Page component={OverviewPage} />} /></Route>
               <Route element={<Guard page="test-console" />}>
                 <Route path="/test-console" element={<Page component={VoiceStudio} />} />

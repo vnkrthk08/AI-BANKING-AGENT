@@ -102,6 +102,11 @@ class AuthService:
             user = s.get(UserRow, user_id)
             return self._public_user(user) if user else None
 
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        with self.db.session() as s:
+            user = s.scalar(select(UserRow).where(UserRow.username == username))
+            return self._public_user(user) if user else None
+
     def list_users(self) -> list[Dict[str, Any]]:
         with self.db.session() as s:
             return [self._public_user(u) for u in s.scalars(select(UserRow).order_by(UserRow.username)).all()]

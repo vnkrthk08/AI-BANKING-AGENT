@@ -4,6 +4,7 @@ import {
   Bell,
   ChartBar,
   Headset,
+  IdentificationBadge,
   List,
   MagnifyingGlass,
   Megaphone,
@@ -32,6 +33,7 @@ const NAV: { key: HubKey; to: string; label: string; icon: ReactElement; group: 
   { key: "campaigns", to: "/campaigns", label: "Campaigns", icon: <Megaphone size={18} />, group: "Manage" },
   { key: "team", to: "/team", label: "Team", icon: <UsersThree size={18} />, group: "Manage" },
   { key: "governance", to: "/governance", label: "Governance", icon: <ShieldCheck size={18} />, group: "Control" },
+  { key: "admin", to: "/admin", label: "Platform Admin", icon: <IdentificationBadge size={18} />, group: "Control" },
 ];
 
 const MOBILE_DOCK: { key: HubKey; to: string; label: string; icon: ReactElement }[] = [
@@ -90,7 +92,7 @@ function Inbox() {
 
 export function AppShell() {
   const [role] = useRole();
-  const { user, logout } = useAuth();
+  const { user, logout, isImpersonating, revertImpersonation, originalAdmin } = useAuth();
   const location = useLocation();
   const [navOpen, setNavOpen] = useState(false);
   const [cmdOpen, setCmdOpen] = useState(false);
@@ -157,6 +159,23 @@ export function AppShell() {
 
         {/* Main Content Area */}
         <div className="main" onClick={() => navOpen && setNavOpen(false)}>
+          {isImpersonating && (
+            <div className="impersonation-bar" role="status" aria-live="polite">
+              <div className="impersonation-info">
+                <span className="impersonation-pill">🎭 Presentation Mode</span>
+                <span>
+                  Viewing platform as <strong>{user?.full_name}</strong> ({user?.role}) &bull; {user?.branch}
+                </span>
+              </div>
+              <button
+                className="btn sm secondary revert-btn"
+                onClick={() => void revertImpersonation()}
+                title="Exit to Super Admin"
+              >
+                ⬅ Return to Super Admin ({originalAdmin?.full_name || "Admin"})
+              </button>
+            </div>
+          )}
           <header className="topbar">
             <button className="icon-btn menu-btn" aria-label="Open navigation" onClick={(e) => { e.stopPropagation(); setNavOpen(true); }}>
               <List size={20} />

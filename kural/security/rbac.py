@@ -18,6 +18,7 @@ class Role(str, Enum):
     COMPLIANCE_OFFICER = "COMPLIANCE_OFFICER"
     AUDITOR = "AUDITOR"
     SYSTEM_ADMIN = "SYSTEM_ADMIN"
+    SUPER_ADMIN = "SUPER_ADMIN"
 
 
 ALL_ROLES = {r.value for r in Role}
@@ -29,13 +30,14 @@ CUSTOMER_DATA_ROLES: Set[str] = {
     Role.SUPERVISOR.value,
     Role.COMPLIANCE_OFFICER.value,
     Role.AUDITOR.value,
+    Role.SUPER_ADMIN.value,
 }
 
 # Roles with administration capabilities
-ADMIN_ROLES: Set[str] = {Role.SYSTEM_ADMIN.value}
+ADMIN_ROLES: Set[str] = {Role.SYSTEM_ADMIN.value, Role.SUPER_ADMIN.value}
 
 # Roles with compliance oversight
-COMPLIANCE_ROLES: Set[str] = {Role.COMPLIANCE_OFFICER.value, Role.AUDITOR.value}
+COMPLIANCE_ROLES: Set[str] = {Role.COMPLIANCE_OFFICER.value, Role.AUDITOR.value, Role.SUPER_ADMIN.value}
 
 _OPS = Role.OPS_MANAGER.value
 _SUP = Role.SUPERVISOR.value
@@ -43,38 +45,40 @@ _AGT = Role.AGENT.value
 _CMP = Role.COMPLIANCE_OFFICER.value
 _AUD = Role.AUDITOR.value
 _ADM = Role.SYSTEM_ADMIN.value
+_SAD = Role.SUPER_ADMIN.value
 
 PERMISSIONS: dict[str, Set[str]] = {
     # Operational read models (customer-linked, so SYSTEM_ADMIN is excluded)
-    "dashboard:view": {_OPS, _SUP, _AGT, _CMP, _AUD},
+    "dashboard:view": {_OPS, _SUP, _AGT, _CMP, _AUD, _SAD},
     "customer:read": set(CUSTOMER_DATA_ROLES),
-    "customer:write": {_OPS, _SUP},
+    "customer:write": {_OPS, _SUP, _SAD},
     "call:read": set(CUSTOMER_DATA_ROLES),
-    "transcript:read": {_OPS, _SUP, _AGT, _CMP, _AUD},
-    "recording:read": {_SUP, _CMP, _AUD},
-    "voice:operate": {_OPS, _SUP, _AGT},
+    "transcript:read": {_OPS, _SUP, _AGT, _CMP, _AUD, _SAD},
+    "recording:read": {_SUP, _CMP, _AUD, _SAD},
+    "voice:operate": {_OPS, _SUP, _AGT, _SAD},
     "case:read": set(CUSTOMER_DATA_ROLES),
-    "case:work": {_OPS, _SUP, _AGT},
-    "case:assign": {_OPS, _SUP},
+    "case:work": {_OPS, _SUP, _AGT, _SAD},
+    "case:assign": {_OPS, _SUP, _SAD},
     "callback:read": set(CUSTOMER_DATA_ROLES),
-    "callback:manage": {_OPS, _SUP, _AGT},
-    "campaign:read": {_OPS, _SUP, _CMP, _AUD},
-    "campaign:manage": {_OPS},
-    "campaign:approve": {_CMP},
-    "campaign:execute": {_OPS},
-    "agent:read": {_OPS, _SUP, _AGT},
-    "agent:manage": {_OPS, _SUP},
-    "audit:read": {_OPS, _SUP, _CMP, _AUD, _ADM},
-    "report:export": {_OPS, _CMP, _AUD},
-    "compliance:read": {_OPS, _CMP, _AUD},
+    "callback:manage": {_OPS, _SUP, _AGT, _SAD},
+    "campaign:read": {_OPS, _SUP, _CMP, _AUD, _SAD},
+    "campaign:manage": {_OPS, _SAD},
+    "campaign:approve": {_CMP, _SAD},
+    "campaign:execute": {_OPS, _SAD},
+    "agent:read": {_OPS, _SUP, _AGT, _SAD},
+    "agent:manage": {_OPS, _SUP, _SAD},
+    "audit:read": {_OPS, _SUP, _CMP, _AUD, _ADM, _SAD},
+    "report:export": {_OPS, _CMP, _AUD, _SAD},
+    "compliance:read": {_OPS, _CMP, _AUD, _SAD},
     "notification:read": ALL_ROLES,
-    "notification:deliveries": {_OPS, _SUP, _CMP, _AUD, _ADM},
+    "notification:deliveries": {_OPS, _SUP, _CMP, _AUD, _ADM, _SAD},
     "system:read": ALL_ROLES,
-    "system:emergency_stop": {_OPS, _SUP, _CMP, _ADM},
-    "system:resume_dialing": {_OPS, _ADM},
-    "telephony:dial": {_OPS, _SUP, _AGT},
-    "telephony:transfer": {_SUP, _AGT},
-    "user:manage": {_ADM},
+    "system:emergency_stop": {_OPS, _SUP, _CMP, _ADM, _SAD},
+    "system:resume_dialing": {_OPS, _ADM, _SAD},
+    "telephony:dial": {_OPS, _SUP, _AGT, _SAD},
+    "telephony:transfer": {_SUP, _AGT, _SAD},
+    "user:manage": {_ADM, _SAD},
+    "admin:portal": {_SAD},
 }
 
 

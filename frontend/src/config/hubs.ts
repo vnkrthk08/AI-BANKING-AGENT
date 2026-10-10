@@ -7,13 +7,14 @@ export const HUBS = [
   { key: "campaigns", path: "/campaigns", permission: "campaign:read" },
   { key: "team", path: "/team", permission: "agent:read" },
   { key: "governance", path: "/governance", permission: "system:read" },
+  { key: "admin", path: "/admin", permission: "admin:portal" },
 ] as const;
 export type HubKey = (typeof HUBS)[number]["key"];
 export function allowedHubs(permissions: string[] | undefined): HubKey[] {
   return HUBS.filter((h) => permissions?.includes(h.permission)).map((h) => h.key);
 }
 export function homePath(permissions: string[] | undefined): string {
-  const order: HubKey[] = ["executive", "work", "governance", "test-console"];
+  const order: HubKey[] = ["admin", "executive", "work", "governance", "test-console"];
   const allowed = allowedHubs(permissions);
   const key = order.find((k) => allowed.includes(k)) ?? allowed[0];
   return HUBS.find((h) => h.key === key)?.path ?? "/governance";

@@ -1,6 +1,6 @@
 export type VoiceState = "READY" | "LISTENING" | "PROCESSING" | "SPEAKING" | "INTERRUPTED" | "SILENCE_REMINDER" | "TERMINATING" | "ENDED";
 export type PolicyDecision = "ALLOWED" | "BLOCKED";
-export type Role = "OPS_MANAGER" | "SUPERVISOR" | "AGENT" | "COMPLIANCE" | "SYSTEM_ADMIN";
+export type Role = "OPS_MANAGER" | "SUPERVISOR" | "AGENT" | "COMPLIANCE" | "COMPLIANCE_OFFICER" | "AUDITOR" | "SYSTEM_ADMIN" | "SUPER_ADMIN";
 export type Disposition = "CLOSED" | "CALLBACK_SCHEDULED" | "ESCALATED" | "NOT_INTERESTED" | "BUSY" | "NO_ANSWER" | "DND" | "FAILED";
 export type CallStatus = "IN_PROGRESS" | "COMPLETED";
 export type CallbackStatus = "IMMEDIATE" | "SCHEDULED" | "OVERDUE" | "COMPLETED" | "CANCELLED" | "DUE" | "DIALING" | "REQUESTED" | "FAILED";

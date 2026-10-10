@@ -241,3 +241,103 @@ def deactivate_user(
     result = auth_svc.set_active(user_id, False)
     _audit(request, "USER_DEACTIVATED", principal.actor, principal.role, user_id)
     return result
+
+
+class ImpersonateRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+
+
+@auth_router.post("/impersonate")
+def impersonate_user(
+    req: ImpersonateRequest,
+    request: Request,
+    response: Response,
+    principal: Principal = Depends(require("user:manage")),
+    auth_svc: AuthService = Depends(get_auth_service),
+) -> Dict[str, Any]:
+    """Issue a valid session token for another user during presentation or inspection."""
+    target = auth_svc.get_user_by_username(req.username)
+    if not target:
+        raise HTTPException(status_code=404, detail=f"User '{req.username}' not found")
+    access_token, refresh_token = auth_svc.issue_token_pair(target["id"])
+    _set_refresh_cookie(response, refresh_token)
+    _audit(request, "USER_IMPERSONATED", principal.actor, principal.role, target["id"], f"target={req.username}")
+    user = {k: v for k, v in target.items() if k != "token_version"}
+    user["permissions"] = permissions_for(user["role"])
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user,
+        "impersonated_by": principal.actor,
+    }
+
+
+@auth_router.get("/directory")
+def get_user_directory(
+    request: Request,
+    principal: Principal = Depends(require("user:manage")),
+    auth_svc: AuthService = Depends(get_auth_service),
+) -> Dict[str, Any]:
+    """Comprehensive user directory and live operator status for admin presentation."""
+    users = auth_svc.list_users()
+    db = getattr(request.app.state, "database", None)
+    rep = getattr(request.app.state, "report_service", None)
+    audits = rep.list_audits(limit=100) if rep else []
+
+    DEMO_PASSWORDS = {
+        "admin": "Admin-Pass-2026!",
+        "ops1": "Ops-Pass-2026!",
+        "sup1": "Sup-Pass-2026!",
+        "agent1": "Agent-Pass-2026!",
+        "comp1": "Comp-Pass-2026!",
+        "auditor1": "Audit-Pass-2026!",
+    }
+
+    ROLE_DESCRIPTIONS = {
+        "SUPER_ADMIN": "Platform Executive with universal oversight, live role inspector, and complete platform access.",
+        "OPS_MANAGER": "Central Operations Lead overseeing campaign execution, dialing pacing, queue health, and emergency controls.",
+        "SUPERVISOR": "Floor Lead managing shift rosters, live call QA, escalations, and agent performance.",
+        "AGENT": "Frontline Customer Service Representative resolving cases, customer callbacks, and AI voice interactions.",
+        "COMPLIANCE_OFFICER": "Regulatory & Risk Lead enforcing dual-control campaign approvals, TRAI consent ledgers, and privacy policies.",
+        "AUDITOR": "Independent Inspector with read-only audit verification across transcripts, calls, and immutable ledger events.",
+        "SYSTEM_ADMIN": "Technical Administrator managing platform infrastructure, user provisioning, and service health (Zero-PII).",
+    }
+
+    agent_map: dict[str, Any] = {}
+    if db:
+        from kural.persistence.models import AgentRow
+        with db.session() as s:
+            for row in s.scalars(select(AgentRow)).all():
+                if row.user_id:
+                    agent_map[row.user_id] = {
+                        "agent_id": row.agent_id,
+                        "availability": row.availability,
+                        "skills": row.skills_json or [],
+                        "languages": row.languages_json or [],
+                        "active_calls": row.active_calls,
+                        "handled_today": row.handled_today,
+                    }
+
+    enriched = []
+    for u in users:
+        uname = u["username"].lower()
+        u_audits = [a for a in audits if a.get("actor") == u["username"] or a.get("actorRole") == u["role"]][:5]
+        agent_info = agent_map.get(u["id"])
+
+        enriched.append({
+            **u,
+            "demo_password": DEMO_PASSWORDS.get(uname, "Demo-Pass-2026!"),
+            "role_description": ROLE_DESCRIPTIONS.get(u["role"], "Platform Operator"),
+            "permissions": permissions_for(u["role"]),
+            "agent_profile": agent_info,
+            "recent_actions": u_audits,
+            "availability": agent_info["availability"] if agent_info else ("AVAILABLE" if u.get("is_active") else "INACTIVE"),
+        })
+
+    return {
+        "users": enriched,
+        "total_users": len(enriched),
+        "active_users": sum(1 for u in enriched if u.get("is_active")),
+        "roles_present": list({u["role"] for u in enriched}),
+    }
+

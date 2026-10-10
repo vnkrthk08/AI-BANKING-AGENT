@@ -1,6 +1,7 @@
 import type { Role } from "../types";
 
 export type RouteKey =
+  | "admin"
   | "executive"
   | "test-console"
   | "calls"
@@ -29,7 +30,8 @@ export type ActionKey =
   | "supervise-live"
   | "manage-campaigns"
   | "schedule-report"
-  | "view-audit";
+  | "view-audit"
+  | "switch-user";
 
 export interface RoleAccess {
   label: string;
@@ -39,6 +41,42 @@ export interface RoleAccess {
 }
 
 export const ROLE_ACCESS: Record<Role, RoleAccess> = {
+  SUPER_ADMIN: {
+    label: "Super Admin (Executive)",
+    home: "admin",
+    routes: [
+      "admin",
+      "executive",
+      "test-console",
+      "calls",
+      "campaigns",
+      "work",
+      "team",
+      "governance",
+      "live-calls",
+      "call-log",
+      "customer-journey",
+      "callbacks",
+      "escalations",
+      "insights",
+      "reports",
+      "compliance",
+      "system-health",
+    ],
+    actions: [
+      "export",
+      "view-transcript",
+      "view-audio",
+      "call-now",
+      "assign-case",
+      "resolve-case",
+      "supervise-live",
+      "manage-campaigns",
+      "schedule-report",
+      "view-audit",
+      "switch-user",
+    ],
+  },
   SYSTEM_ADMIN: {
     label: "System administrator",
     home: "governance",
@@ -114,13 +152,40 @@ export const ROLE_ACCESS: Record<Role, RoleAccess> = {
     ],
     actions: ["export", "view-transcript", "view-audio", "schedule-report", "view-audit"],
   },
+  COMPLIANCE_OFFICER: {
+    label: "Compliance Officer",
+    home: "governance",
+    routes: [
+      "test-console",
+      "governance",
+      "calls",
+      "compliance",
+      "call-log",
+      "customer-journey",
+      "reports",
+    ],
+    actions: ["export", "view-transcript", "view-audio", "schedule-report", "view-audit"],
+  },
+  AUDITOR: {
+    label: "Auditor",
+    home: "governance",
+    routes: [
+      "governance",
+      "calls",
+      "compliance",
+      "call-log",
+      "reports",
+    ],
+    actions: ["export", "view-transcript", "view-audio", "view-audit"],
+  },
 };
 
 export const ROUTES: Record<
   RouteKey,
   { path: string; label: string; section: "WORKSPACE" | "MANAGE" | "GOVERNANCE" | "TOOLS" }
 > = {
-  // 7 Unified Operational Hubs
+  // 8 Unified Operational Hubs
+  admin: { path: "/admin", label: "Platform Admin", section: "TOOLS" },
   executive: { path: "/executive", label: "Executive Overview", section: "WORKSPACE" },
   "test-console": { path: "/test-console", label: "AI Voice Studio", section: "WORKSPACE" },
   calls: { path: "/calls", label: "Calls Hub", section: "WORKSPACE" },
