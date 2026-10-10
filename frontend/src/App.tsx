@@ -10,7 +10,7 @@ HUBS:
 6. Team Roster (/team)
 7. Governance & System Health (/governance)
 */
-import { lazy, Suspense } from "react";
+import React, { lazy, Suspense } from "react";
 import type { ComponentType } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import { ROLE_ACCESS, ROUTES, type RouteKey } from "./config/permissions";
@@ -19,6 +19,8 @@ import { DashboardProvider } from "./hooks/DashboardContext";
 import { useRole } from "./hooks/useRole";
 import { RoleProvider } from "./hooks/useRole";
 import "./dashboard.css";
+import { AuthProvider, useAuth } from "./auth/AuthContext";
+import { LoginPage } from "./auth/LoginPage";
 
 // 7 Unified Operational Hubs
 const OverviewPage = lazy(() => import("./pages/OverviewPage").then((m) => ({ default: m.OverviewPage })));
@@ -51,9 +53,17 @@ function RoleHome() {
   return <Navigate to={ROUTES[ROLE_ACCESS[role].home].path} replace />;
 }
 
+function Gate({ children }: { children: React.ReactNode }) {
+  const { user, checking } = useAuth();
+  if (checking) return <div className="ops-page-state" role="status">Checking your session…</div>;
+  if (!user) return <LoginPage />;
+  return <>{children}</>;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
+      <AuthProvider><Gate>
       <RoleProvider>
         <DashboardProvider>
           <Routes>
@@ -101,6 +111,7 @@ export default function App() {
           </Routes>
         </DashboardProvider>
       </RoleProvider>
+      </Gate></AuthProvider>
     </BrowserRouter>
   );
 }

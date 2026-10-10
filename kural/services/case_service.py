@@ -331,7 +331,7 @@ class CaseService:
                       if agent_id else self.unassign_case(case_id, actor=actor, actor_role=actor_role))
         if "status" in patch:
             result = self.set_status(case_id, str(patch["status"]), actor=actor, actor_role=actor_role,
-                                     note=patch.get("resolution_notes") or patch.get("note"))
+                                     note=patch.get("resolution_notes") or patch.get("resolutionNotes") or patch.get("note"))
         elif patch.get("note"):
             result = self.add_note(case_id, str(patch["note"]), actor=actor, actor_role=actor_role)
         simple = {k: patch[k] for k in ("priority", "assigned_team", "callback_id", "callback_cancelled", "summary") if k in patch}

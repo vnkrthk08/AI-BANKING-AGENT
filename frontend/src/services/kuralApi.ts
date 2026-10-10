@@ -1,3 +1,4 @@
+import { apiFetch, streamTicket } from "./http";
 import type { CaseRecord, SessionDetail, SessionResponse, TurnResponse } from "../types";
 
 export interface VoiceTurnResponse {
@@ -40,10 +41,7 @@ export interface RealtimeVoiceConnection {
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-  });
+  const response = await apiFetch(url, init);
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { detail?: string } | null;
     throw new Error(body?.detail ?? `KURAL request failed (${response.status})`);
@@ -55,7 +53,7 @@ export const kuralApi = {
   health: () => request<{ status: string }>("/health"),
   createSession: (customerRef?: string) => request<SessionResponse>("/api/v1/sessions", {
     method: "POST",
-    body: JSON.stringify({ customer_ref: customerRef || "CUST001" }),
+    body: JSON.stringify({ customer_ref: customerRef }),
   }),
 
   sendMessage: (sessionId: string, text: string) => request<TurnResponse>(
@@ -66,7 +64,7 @@ export const kuralApi = {
     const form = new FormData();
     form.append("session_id", sessionId);
     form.append("audio", audio, "customer.webm");
-    const response = await fetch("/api/v1/voice/turn", { method: "POST", body: form });
+    const response = await apiFetch("/api/v1/voice/turn", { method: "POST", body: form });
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as { detail?: string } | null;
       throw new Error(body?.detail ?? `Voice turn failed (${response.status})`);
@@ -139,9 +137,9 @@ export const kuralApi = {
     sessionId: string,
     handlers: RealtimeVoiceHandlers,
     resume = false,
-  ): Promise<RealtimeVoiceConnection> => {
+  ): Promise<RealtimeVoiceConnection> => streamTicket(sessionId).then((ticket) => {
     const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${scheme}//${window.location.host}/api/v1/voice/realtime`);
+    const socket = new WebSocket(`${scheme}//${window.location.host}/api/v1/voice/realtime?session_id=${encodeURIComponent(sessionId)}&ticket=${encodeURIComponent(ticket)}`);
     socket.binaryType = "arraybuffer";
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -198,15 +196,10 @@ export const kuralApi = {
         }
       };
     });
-  },
+  }),
+
   session: (sessionId: string) => request<SessionDetail>(`/api/v1/sessions/${encodeURIComponent(sessionId)}`),
   cases: () => request<CaseRecord[]>("/api/v1/cases"),
-  resetDemo: () =>
-    request<{ status: string; message: string }>("/api/demo/reset", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    }),
   getNotifications: (unreadOnly?: boolean) =>
     request<{ notifications: AppNotification[]; unread_count: number; total: number }>(
       "/api/notifications" + (unreadOnly ? "?unread_only=true" : "")

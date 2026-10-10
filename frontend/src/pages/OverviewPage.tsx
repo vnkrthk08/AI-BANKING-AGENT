@@ -8,8 +8,9 @@ import { Panel } from "../components/Panel";
 import { useDashboard } from "../hooks/DashboardContext";
 import { filterCalls, previousPeriodCalls, summarizeCalls } from "../services/selectors";
 
-function delta(current: number, previous: number): number {
-  return previous ? ((current - previous) / previous) * 100 : 0;
+function delta(current: number, previous: number): number | undefined {
+  // No prior-period data means no honest comparison: show "—" instead of an invented 0%.
+  return previous ? ((current - previous) / previous) * 100 : undefined;
 }
 
 export function OverviewPage() {
@@ -57,7 +58,7 @@ export function OverviewPage() {
       {/* 1. WHAT IS HAPPENING? — Live Telephony Status */}
       <div className="ops-live-strip">
         <span className="ops-live-strip-title">
-          <i /> LIVE TELEPHONY
+          <i /> OPERATIONS NOW
         </span>
         <span>
           <Phone size={15} />
@@ -71,7 +72,7 @@ export function OverviewPage() {
           <Timer size={15} />
           <strong>{queueDepth}</strong> open follow-ups
         </span>
-        <span className="ops-strip-context">Contact Window: 09:00–20:00 IST · RBI &amp; TRAI Compliant</span>
+        <span className="ops-strip-context">Calling window 09:00–19:00 IST · no Sundays or bank holidays</span>
       </div>
 
       {/* 2. WHAT NEEDS ATTENTION? & 3. WHAT ACTION SHOULD I TAKE? */}

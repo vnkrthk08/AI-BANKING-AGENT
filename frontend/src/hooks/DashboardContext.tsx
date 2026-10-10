@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { applyMockPersistence, dashboardApi, type DashboardMode } from "../services/dashboardApi";
+import { dashboardApi, type DashboardMode } from "../services/dashboardApi";
+import { streamTicket } from "../services/http";
 import type { DashboardFilters, DashboardSnapshot } from "../types";
 
 interface DashboardContextValue {
@@ -24,7 +25,6 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   async function refresh() {
     setLoading(true);
     try {
-      applyMockPersistence();
       const data = await dashboardApi.getSnapshot();
       setSnapshot(data);
       setError(null);
@@ -37,25 +37,27 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     void refresh();
 
     let eventSource: EventSource | null = null;
-    try {
-      eventSource = new EventSource("/api/events/sse");
-      eventSource.onmessage = () => {
-        void refresh();
-      };
-      eventSource.addEventListener("callback.created", () => void refresh());
-      eventSource.addEventListener("callback.updated", () => void refresh());
-      eventSource.addEventListener("case.created", () => void refresh());
-      eventSource.addEventListener("demo_reset", () => {
-        localStorage.removeItem("kural-ops-cases-demo-v1");
-        localStorage.removeItem("kural-ops-callbacks-demo-v1");
-        localStorage.removeItem("kural-ops-campaigns-demo-v1");
-        void refresh();
-      });
-    } catch {
-      /* EventSource unavailable */
-    }
+    let closed = false;
+    let timer: number | undefined;
+    const schedule = () => { window.clearTimeout(timer); timer = window.setTimeout(() => void refresh(), 400); };
+    const connect = async () => {
+      try {
+        const ticket = await streamTicket("events");
+        if (closed) return;
+        eventSource = new EventSource(`/api/events/sse?ticket=${encodeURIComponent(ticket)}`);
+        eventSource.onmessage = schedule;
+        for (const t of ["case.created", "case.assigned", "case.reassigned", "case.status_changed", "case.resolved", "callback.scheduled",
+          "callback.rescheduled", "callback.cancelled", "callback.due", "callback.outcome", "callback.requested", "telephony_status_updated"]) {
+          eventSource.addEventListener(t, schedule);
+        }
+        eventSource.onerror = () => { eventSource?.close(); if (!closed) window.setTimeout(() => void connect(), 5000); };
+      } catch { if (!closed) window.setTimeout(() => void connect(), 10000); }
+    };
+    void connect();
 
     return () => {
+      closed = true;
+      window.clearTimeout(timer);
       eventSource?.close();
     };
   }, []);

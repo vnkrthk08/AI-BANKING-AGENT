@@ -39,9 +39,15 @@ export interface RoleAccess {
 }
 
 export const ROLE_ACCESS: Record<Role, RoleAccess> = {
+  SYSTEM_ADMIN: {
+    label: "System administrator",
+    home: "governance",
+    routes: ["governance", "system-health"],
+    actions: ["view-audit"],
+  },
   OPS_MANAGER: {
     label: "Ops manager",
-    home: "test-console",
+    home: "executive",
     routes: [
       "executive",
       "test-console",

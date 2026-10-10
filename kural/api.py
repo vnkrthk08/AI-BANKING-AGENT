@@ -17,7 +17,7 @@ from kural.conversation.engine import KuralEngine
 from kural.models import SessionCreateRequest, SessionResponse, TurnRequest, TurnResponse, VoiceTurnResponse
 from kural.persistence.database import Database
 from kural.repositories import KuralRepository
-from kural.services.callback_service import CallbackDraft, CallbackService, KOLKATA_TZ
+from kural.services.callback_service import CallbackDraft, CallbackPolicyError, CallbackService, KOLKATA_TZ
 from kural.services.case_service import CaseService
 from kural.services.event_bus import event_bus
 from kural.voice.orchestrator import RealtimeVoiceOrchestrator
@@ -403,7 +403,10 @@ async def patch_callback(callback_id: str, request: Request, principal: Principa
         new_local = patch.get("scheduled_at_local")
         if not new_local:
             new_local = new_utc.astimezone(KOLKATA_TZ).strftime("%a %d %b, %I:%M %p IST")
-        return service.reschedule_callback(callback_id, new_utc, new_local, actor=actor)
+        try:
+            return service.reschedule_callback(callback_id, new_utc, new_local, actor=actor, enforce_policy=True)
+        except CallbackPolicyError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
     if patch.get("status") == "CANCELLED":
         return service.cancel_callback(callback_id, actor=actor)
@@ -427,9 +430,14 @@ async def post_reschedule_callback(callback_id: str, request: Request, principal
     scheduled_local = data.get("scheduled_at_local")
     if not scheduled_local:
         scheduled_local = scheduled_utc.astimezone(KOLKATA_TZ).strftime("%a %d %b, %I:%M %p IST")
-    return _callback_service(request).reschedule_callback(
-        callback_id, scheduled_utc, scheduled_local, actor=f"STAFF:{principal.actor}", enforce_policy=True,
-    )
+    try:
+        return _callback_service(request).reschedule_callback(
+            callback_id, scheduled_utc, scheduled_local, actor=f"STAFF:{principal.actor}", enforce_policy=True,
+        )
+    except CallbackPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Callback not found")
 
 
 @router.post("/callbacks/{callback_id}/cancel")

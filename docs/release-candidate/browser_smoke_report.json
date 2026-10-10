@@ -1,0 +1,138 @@
+{
+  "pages": [
+    {
+      "viewport": "desktop",
+      "page": "overview",
+      "url": "http://localhost:5173/executive",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "desktop",
+      "page": "voice-studio",
+      "url": "http://localhost:5173/test-console",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "desktop",
+      "page": "calls",
+      "url": "http://localhost:5173/calls",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "desktop",
+      "page": "campaigns",
+      "url": "http://localhost:5173/campaigns",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "desktop",
+      "page": "work-queue",
+      "url": "http://localhost:5173/work",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "desktop",
+      "page": "team",
+      "url": "http://localhost:5173/team",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "desktop",
+      "page": "governance",
+      "url": "http://localhost:5173/governance",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "tablet",
+      "page": "overview",
+      "url": "http://localhost:5173/executive",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "tablet",
+      "page": "voice-studio",
+      "url": "http://localhost:5173/test-console",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "tablet",
+      "page": "calls",
+      "url": "http://localhost:5173/calls",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "tablet",
+      "page": "campaigns",
+      "url": "http://localhost:5173/campaigns",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "tablet",
+      "page": "work-queue",
+      "url": "http://localhost:5173/work",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "tablet",
+      "page": "team",
+      "url": "http://localhost:5173/team",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "tablet",
+      "page": "governance",
+      "url": "http://localhost:5173/governance",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "mobile",
+      "page": "overview",
+      "url": "http://localhost:5173/executive",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "mobile",
+      "page": "voice-studio",
+      "url": "http://localhost:5173/test-console",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "mobile",
+      "page": "calls",
+      "url": "http://localhost:5173/calls",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "mobile",
+      "page": "campaigns",
+      "url": "http://localhost:5173/campaigns",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "mobile",
+      "page": "work-queue",
+      "url": "http://localhost:5173/work",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "mobile",
+      "page": "team",
+      "url": "http://localhost:5173/team",
+      "horizontal_overflow": false
+    },
+    {
+      "viewport": "mobile",
+      "page": "governance",
+      "url": "http://localhost:5173/governance",
+      "horizontal_overflow": false
+    }
+  ],
+  "server_errors": [],
+  "console_errors": [
+    "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+    "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+    "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+  ],
+  "login_failure_message": "Invalid username or password"
+}

@@ -17,6 +17,7 @@ import {
   Waveform,
   X,
 } from "@phosphor-icons/react";
+import { apiJson } from "../services/http";
 import { kuralApi } from "../services/kuralApi";
 import type { RealtimeVoiceConnection } from "../services/kuralApi";
 import type { PolicyDecision, TranscriptMessage, VoiceState } from "../types";
@@ -168,34 +169,36 @@ export function TestConsolePage() {
 
   // Customer context
   const [customerInfo, setCustomerInfo] = useState({
-    name: "Rahul Sharma",
-    customerRef: "CUST-00001",
-    phone: "+91 98765 43210",
-    accountType: "Savings Account · Active",
-    language: "Hindi / English",
-    campaign: "App v2.4 Upgrade Outreach",
+    name: "",
+    customerRef: "",
+    phone: "",
+    accountType: "",
+    language: "",
+    campaign: "Voice Studio session",
   });
+  const [customersError, setCustomersError] = useState<string | null>(null);
+  void customersError;
   const [availableCustomers, setAvailableCustomers] = useState<Array<Record<string, unknown>>>([]);
   const [showCustomerPicker, setShowCustomerPicker] = useState(false);
 
   useEffect(() => {
-    fetch("/api/customers?limit=10")
-      .then((res) => (res.ok ? res.json() : []))
+    apiJson<Array<Record<string, unknown>>>("/api/customers?limit=50")
       .then((data) => {
+        if (Array.isArray(data) && data.length === 0) setCustomersError("No customers are registered yet. Add or import customers in the Calls hub before starting a call.");
         if (Array.isArray(data) && data.length > 0) {
           setAvailableCustomers(data);
           const first = data[0] as Record<string, string>;
           setCustomerInfo({
-            name: first.full_name || "Rahul Sharma",
-            customerRef: first.customer_ref || "CUST-00001",
-            phone: first.phone || "+91 98765 43210",
-            accountType: `${first.account_type || "Savings"} Account · Active`,
-            language: first.preferred_language || "Hindi / English",
-            campaign: "App v2.4 Upgrade Outreach",
+            name: first.full_name || "",
+            customerRef: first.customer_ref || "",
+            phone: first.masked_phone || first.phone || "",
+            accountType: `${first.account_type || ""} account`,
+            language: first.preferred_language || "",
+            campaign: "Voice Studio session",
           });
         }
       })
-      .catch(() => undefined);
+      .catch((e: unknown) => setCustomersError(e instanceof Error ? e.message : "Customers could not be loaded."));
   }, []);
 
   function playVoiceSample(sampleUrl: string, voiceId: string) {
@@ -219,8 +222,7 @@ export function TestConsolePage() {
     try {
       if (sampleAudioRef.current) sampleAudioRef.current.pause();
       setPlayingVoice(null);
-      await kuralApi.resetDemo();
-      setResetNotice("Telephony cache and local demo data cleared.");
+      setResetNotice("Started a fresh session. No stored data was deleted.");
       window.setTimeout(() => setResetNotice(null), 4000);
       await startNewSession();
     } catch (e) {
@@ -696,6 +698,12 @@ export function TestConsolePage() {
       voiceConnectionRef.current = connection;
 
       await context.audioWorklet.addModule("/pcm-capture-worklet.js");
+      // The server may have ended the call (e.g. speech provider unavailable) while we awaited;
+      // keep its truthful error instead of reporting a secondary audio-setup failure.
+      if (context.state === "closed" || audioContextRef.current !== context) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
       const source = context.createMediaStreamSource(stream);
 
       // Real-time Web Audio AnalyserNode for true dB / energy meter
@@ -900,7 +908,7 @@ export function TestConsolePage() {
           <div className="voice-topbar-controls">
             {/* Backend connectivity indicator */}
             <span style={{ fontSize: "11px", color: online ? "#34d399" : "#f87171", fontWeight: 600 }}>
-              {online ? "● Backend Online" : "● Offline"}
+              {online ? "● API reachable" : "● API unreachable"}
             </span>
 
             {/* Live call status badge */}
@@ -929,7 +937,7 @@ export function TestConsolePage() {
               onClick={() => void handleResetDemo()}
               title="Reset session and telephony cache"
             >
-              <ArrowCounterClockwise size={13} /> Reset
+              <ArrowCounterClockwise size={13} /> New session
             </button>
           </div>
         </header>
@@ -1019,7 +1027,7 @@ export function TestConsolePage() {
 
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <span style={{ fontSize: "11px", color: "#34d399", display: "flex", alignItems: "center", gap: "4px" }}>
-              <ShieldCheck size={14} /> Consent Verified
+              <ShieldCheck size={14} /> Consent captured during call
             </span>
             <button
               className="ops-button ops-button-secondary"
@@ -1056,11 +1064,11 @@ export function TestConsolePage() {
                     onClick={() => {
                       setCustomerInfo({
                         name: c.full_name || "Customer",
-                        customerRef: c.customer_ref || `CUST-00${idx + 1}`,
-                        phone: c.phone || "+91 98765 00000",
-                        accountType: `${c.account_type || "Savings"} Account · Active`,
-                        language: c.preferred_language || "Hindi / English",
-                        campaign: "App v2.4 Upgrade Outreach",
+                        customerRef: c.customer_ref || "",
+                        phone: c.masked_phone || c.phone || "",
+                        accountType: `${c.account_type || ""} account`,
+                        language: c.preferred_language || "",
+                        campaign: "Voice Studio session",
                       });
                       setShowCustomerPicker(false);
                       void startNewSession();
@@ -1363,7 +1371,7 @@ export function TestConsolePage() {
             <ShieldCheck size={16} /> Closed-World Knowledge Grounding
           </span>
           <span>
-            <Clock size={16} /> TRAI Contact Window Enforced (09:00-20:00 IST)
+            <Clock size={16} /> Calling window enforced (09:00–19:00 IST)
           </span>
         </footer>
 

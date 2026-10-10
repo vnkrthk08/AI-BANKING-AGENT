@@ -29,7 +29,9 @@ export function WorkQueuePage() {
 
   const [selectedCallback, setSelectedCallback] = useState<Callback | null>(null);
   const [rescheduleModalOpen, setRescheduleModalOpen] = useState(false);
-  const [rescheduleTime, setRescheduleTime] = useState("Tomorrow 3:00 PM");
+  const [rescheduleTime, setRescheduleTime] = useState("");
+  const [actionError, setActionError] = useState<string | null>(null);
+  const fail = (e: unknown) => setActionError(e instanceof Error ? e.message : "The action failed");
 
   const [filterPriority, setFilterPriority] = useState<string>("ALL");
   const [actionLoading, setActionLoading] = useState(false);
@@ -45,6 +47,7 @@ export function WorkQueuePage() {
     e.preventDefault();
     if (!selectedCase) return;
     setActionLoading(true);
+    setActionError(null);
     try {
       await dashboardApi.updateCase(selectedCase.id, {
         assignedAgentId: assignedAgent,
@@ -52,6 +55,8 @@ export function WorkQueuePage() {
       });
       setAssignModalOpen(false);
       refresh();
+    } catch (err) {
+      fail(err);
     } finally {
       setActionLoading(false);
     }
@@ -61,14 +66,17 @@ export function WorkQueuePage() {
     e.preventDefault();
     if (!selectedCase) return;
     setActionLoading(true);
+    setActionError(null);
     try {
       await dashboardApi.updateCase(selectedCase.id, {
         status: "RESOLVED",
-        resolutionNotes: resolveNotes,
+        resolution_notes: resolveNotes,
       });
       setResolveModalOpen(false);
       setResolveNotes("");
       refresh();
+    } catch (err) {
+      fail(err);
     } finally {
       setActionLoading(false);
     }
@@ -78,13 +86,15 @@ export function WorkQueuePage() {
     e.preventDefault();
     if (!selectedCallback) return;
     setActionLoading(true);
+    setActionError(null);
     try {
       await dashboardApi.updateCallback(selectedCallback.id, {
-        preferredAt: rescheduleTime,
-        status: "SCHEDULED",
+        preferredAt: new Date(rescheduleTime).toISOString(),
       });
       setRescheduleModalOpen(false);
       refresh();
+    } catch (err) {
+      fail(err);
     } finally {
       setActionLoading(false);
     }
@@ -93,12 +103,12 @@ export function WorkQueuePage() {
   async function handleCancelCallback(cb: Callback) {
     if (!confirm(`Cancel scheduled callback ${cb.id} for customer ${cb.customerRef}?`)) return;
     setActionLoading(true);
+    setActionError(null);
     try {
-      await dashboardApi.updateCallback(cb.id, {
-        status: "COMPLETED",
-        resolutionNotes: "Cancelled by operations",
-      });
+      await dashboardApi.updateCallback(cb.id, { status: "CANCELLED" });
       refresh();
+    } catch (err) {
+      fail(err);
     } finally {
       setActionLoading(false);
     }
@@ -106,6 +116,7 @@ export function WorkQueuePage() {
 
   return (
     <div className="ops-page">
+      {actionError && <div className="ops-alert ops-alert-error" role="alert">{actionError} <button className="ops-button" onClick={() => setActionError(null)}>Dismiss</button></div>}
       <div className="ops-page-header">
         <div>
           <h1 className="ops-page-title">Work Queue</h1>
@@ -411,17 +422,16 @@ export function WorkQueuePage() {
                   New Local Time Slot (IST):
                 </label>
                 <input
-                  type="text"
+                  type="datetime-local"
                   className="ops-input"
                   style={{ width: "100%" }}
                   value={rescheduleTime}
                   onChange={(e) => setRescheduleTime(e.target.value)}
-                  placeholder="Tomorrow 3:00 PM"
                   required
                 />
               </div>
               <p style={{ fontSize: "0.8rem", color: "var(--ops-muted)", marginBottom: "1rem" }}>
-                Note: Rescheduling invalidates previous calendar locks and publishes an atomic outbox event with version increment.
+                Times are your browser's local time. The bank's calling window, Sundays and holidays are enforced; the previous slot is invalidated.
               </p>
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
                 <button type="button" className="ops-button" onClick={() => setRescheduleModalOpen(false)}>

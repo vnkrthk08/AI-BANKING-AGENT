@@ -193,8 +193,9 @@ def test_at_cb_5_staff_reschedules_in_dashboard(clean_db, client):
     )
     cb_id = create_resp.json()["callback_id"]
 
-    # Staff reschedules via PATCH /api/callbacks/{id}
-    new_utc = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)  # 5:30 PM IST
+    # Staff reschedules via PATCH /api/callbacks/{id} to the next permitted 5:30 PM IST slot
+    from kural.policy.calling_policy import next_permitted_slot
+    new_utc = next_permitted_slot(datetime.now(timezone.utc), hour=17) + timedelta(minutes=30)
     patch_resp = client.patch(
         f"/api/callbacks/{cb_id}",
         json={

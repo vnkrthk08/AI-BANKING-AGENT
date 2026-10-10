@@ -25,8 +25,32 @@ import { ROLE_ACCESS, ROUTES, type RouteKey } from "../config/permissions";
 import { FilterBar } from "./FilterBar";
 import { useDashboard } from "../hooks/DashboardContext";
 import { useRole } from "../hooks/useRole";
+import { useAuth } from "../auth/AuthContext";
+import { apiJson } from "../services/http";
+
+/** Sidebar status derived from the backend's real component checks (never a hardcoded "online"). */
+function SystemStatus() {
+  const [state, setState] = useState<{ tone: string; text: string }>({ tone: "unknown", text: "Checking services…" });
+  useEffect(() => {
+    let alive = true;
+    const load = () => apiJson<{ components: { key: string; status: string }[]; dialing: { stopped: boolean } }>("/api/system/health")
+      .then((h) => {
+        if (!alive) return;
+        const db = h.components.find((c) => c.key === "database")?.status;
+        const voice = ["stt", "tts"].every((k) => h.components.find((c) => c.key === k)?.status === "CONFIGURED");
+        const tel = h.components.find((c) => c.key === "telephony")?.status;
+        if (db !== "HEALTHY") setState({ tone: "bad", text: "Database issue" });
+        else if (h.dialing.stopped) setState({ tone: "warn", text: "Dialing stopped" });
+        else setState({ tone: voice ? "ok" : "warn", text: `${voice ? "Voice ready" : "Voice not configured"} · Telephony ${tel === "HEALTHY" ? "live" : "off"}` });
+      })
+      .catch(() => alive && setState({ tone: "bad", text: "Backend unreachable" }));
+    load();
+    const t = window.setInterval(load, 60000);
+    return () => { alive = false; window.clearInterval(t); };
+  }, []);
+  return <div className={`ops-live-status tone-${state.tone}`} role="status"><i /><span>{state.text}</span></div>;
+}
 import { kuralApi, type AppNotification } from "../services/kuralApi";
-import type { Role } from "../types";
 
 const icons: Record<RouteKey, React.ReactNode> = {
   executive: <House size={18} />,
@@ -50,7 +74,8 @@ const icons: Record<RouteKey, React.ReactNode> = {
 };
 
 export function AppShell() {
-  const [role, setRole] = useRole();
+  const [role] = useRole();
+  const { user, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [dark, setDark] = useState(() => localStorage.getItem("kural-ops-theme") === "dark");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -130,11 +155,6 @@ export function AppShell() {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
   }, [dark]);
 
-  function switchRole(value: Role) {
-    setRole(value);
-    setNotificationsOpen(false);
-    navigate(ROUTES[ROLE_ACCESS[value].home].path);
-  }
 
   function openSearchResult(callId: string) {
     setSearchOpen(false);
@@ -231,10 +251,7 @@ export function AppShell() {
           })}
         </nav>
         <div className="ops-sidebar-bottom">
-          <div className="ops-live-status" title="Telephony & Core Voice Connected">
-            <i />
-            <span>Telephony &amp; Voice Online</span>
-          </div>
+          <SystemStatus />
           <button
             className="ops-collapse"
             onClick={() => setCollapsed((value) => !value)}
@@ -384,22 +401,10 @@ export function AppShell() {
             >
               {dark ? <Sun size={17} /> : <Moon size={17} />}
             </button>
-            <label className="ops-role-select">
-              <span>ACTIVE ROLE</span>
-              <select
-                aria-label="Active role"
-                value={role}
-                onChange={(event) => switchRole(event.target.value as Role)}
-              >
-                {(Object.keys(ROLE_ACCESS) as Role[]).map((item) => (
-                  <option key={item} value={item}>
-                    {ROLE_ACCESS[item].label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="ops-user-avatar" title={role}>
-              {role === "AGENT" ? "A1" : role === "SUPERVISOR" ? "S1" : role === "COMPLIANCE" ? "C1" : "O1"}
+            <div className="ops-user-chip" title={user?.username}>
+              <div className="ops-user-avatar" aria-hidden="true">{(user?.full_name || user?.username || "?").split(" ").map((p) => p[0]).join("").slice(0, 2).toUpperCase()}</div>
+              <div className="ops-user-meta"><strong>{user?.full_name || user?.username}</strong><span>{ROLE_ACCESS[role].label}</span></div>
+              <button className="ops-signout" onClick={() => void logout()}>Sign out</button>
             </div>
           </div>
         </header>
@@ -410,7 +415,7 @@ export function AppShell() {
         </div>
         <footer className="ops-footer">
           <span>
-            <i /> Town Bank Operations Intelligence · High-Volume Telephony Engine
+            <i /> Town Bank operations console
           </span>
           <span>All timestamps Asia/Kolkata (IST)</span>
         </footer>
