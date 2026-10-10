@@ -11,8 +11,10 @@ config = context.config
 if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 load_dotenv()
-_explicit = config.attributes.get("configure_logger") is False
-database_url = config.get_main_option("sqlalchemy.url") if _explicit else os.environ.get("DATABASE_URL", config.get_main_option("sqlalchemy.url"))
+# A URL set programmatically on the Config wins; otherwise DATABASE_URL; otherwise alembic.ini.
+_configured = config.get_main_option("sqlalchemy.url")
+_explicit = _configured and _configured != "sqlite:///./kural_local.db"
+database_url = _configured if _explicit else os.environ.get("DATABASE_URL", _configured)
 config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 

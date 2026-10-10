@@ -24,6 +24,7 @@ class Conversation:
     conversation_summary: str = ""
     recent_relevant_turns: list[dict[str, str]] = field(default_factory=list)
     detour_depth: int = 0
+    callback_readback: str | None = None
     callback_info: dict[str, Any] = field(default_factory=dict)
 
     @property

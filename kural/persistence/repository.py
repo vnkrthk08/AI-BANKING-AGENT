@@ -173,28 +173,61 @@ class SqlAlchemyUnitOfWork(RepositoryTransaction):
 
     def create_case(self, session_id: str, customer_ref: str, category: str,
                     description: str, status: str) -> SupportCase:
+        """AI-raised cases share the operational taxonomy, SLA, idempotency and auto-assignment."""
+        from kural.services.case_service import build_case_row, normalize_issue_code
+
         now = datetime.now(timezone.utc)
-        row = CaseRow(session_id=session_id, customer_ref=customer_ref, category=category,
-                      description=safe_transcript(description), status=status,
-                      callback_requested=False, created_at=now, updated_at=now)
-        self.session.add(row)
-        self.session.flush()
+        issue_code = normalize_issue_code(category)
+        row, _ = build_case_row(
+            self.session, session_id=session_id, customer_ref=customer_ref, issue_code=issue_code,
+            summary=description, key_lines=None, actions_tried=None, callback_id=None,
+            idempotency_key=f"{session_id}:case:{issue_code}", actor="SUBBU", source="VOICE_AI", now=now,
+        )
+        row.category = category
         return SupportCase(row.case_id, session_id, customer_ref, category, row.description,
-                           status, False, now, now)
+                           row.status, False, now, now)
 
     def request_callback(self, session_id: str, case_id: str | None,
-                         requested_at: datetime | None = None) -> CallbackRequest:
+                         requested_at: datetime | None = None, *, customer_ref: str | None = None,
+                         readback: str | None = None, rule: str | None = None,
+                         raw_expression: str | None = None) -> CallbackRequest:
+        """Persist the customer's callback request. With an agreed time it is SCHEDULED (and the
+        customer is told the time); without one it is REQUESTED for a human to agree a time."""
         now = datetime.now(timezone.utc)
+        if customer_ref is None:
+            sess = self.session.get(SessionRow, session_id)
+            customer_ref = sess.customer_ref if sess else "unknown"
+        if requested_at is not None and readback is not None:
+            from kural.services.callback_service import CallbackDraft, format_local, schedule_callback_in_session
+            draft = CallbackDraft(scheduled_at_utc=requested_at, scheduled_at_local=format_local(requested_at),
+                                  raw_expression=raw_expression, reason="CUSTOMER_BUSY" if case_id is None else "SUPPORT_FOLLOW_UP",
+                                  case_id=case_id, rule=rule)
+            row, _ = schedule_callback_in_session(self.session, session_id=session_id, customer_ref=customer_ref,
+                                                  draft=draft, idempotency_key=None, actor="SUBBU", now=now)
+            return CallbackRequest(row.callback_id, session_id, case_id, requested_at, row.status, now, now)
         if case_id is not None:
             case = self.session.get(CaseRow, case_id)
             if case is None:
                 raise KeyError("Case not found")
             case.callback_requested = True
             case.updated_at = now
-        row = CallbackRow(session_id=session_id, case_id=case_id, requested_at=requested_at,
-                          status="REQUESTED", created_at=now, updated_at=now)
+        row = CallbackRow(callback_id=f"CB-{uuid4().hex[:8].upper()}", session_id=session_id, case_id=case_id, customer_ref=customer_ref,
+                          requested_at=requested_at, scheduled_at_utc=requested_at,
+                          reason="CUSTOMER_BUSY" if case_id is None else "SUPPORT_FOLLOW_UP",
+                          status="REQUESTED", created_at=now, updated_at=now,
+                          idempotency_key=f"{session_id}:callback-request:{case_id or 'none'}")
+        if case_id is not None:
+            case = self.session.get(CaseRow, case_id)
+            if case is not None:
+                case.callback_id = row.callback_id
+                row.assigned_agent_id = case.assigned_agent_id
         self.session.add(row)
         self.session.flush()
+        from kural.services.callback_service import _event, _payload
+        from kural.services.domain_events import emit_event
+        _event(self.session, row.callback_id, "REQUESTED", actor="SUBBU", call_id=session_id, at=now)
+        emit_event(self.session, "callback.requested", "CALLBACK", row.callback_id, _payload(row),
+                   idempotency_key=f"callback.requested:{row.callback_id}")
         return CallbackRequest(row.callback_id, session_id, case_id, requested_at, row.status, now, now)
 
 

@@ -221,8 +221,11 @@ class KuralEngine:
                     self._record_event(tx, conversation, "policy_decision", {"decision": "allowed", "action": action.value})
 
             self._transition(tx, conversation, target_state)
+            conversation.callback_readback = None
             for action in actions:
-                self._execute_action(tx, conversation, action, requested_at)
+                self._execute_action(tx, conversation, action, requested_at, sanitized_text)
+            if conversation.callback_readback and Action.REQUEST_CALLBACK in actions:
+                response = approved.CALLBACK_SCHEDULED_TEMPLATE.format(when=conversation.callback_readback)
             if target_state in {State.CLOSING, State.CASE_CREATION} or (
                 target_state == State.CALLBACK_BOOKING and Action.REQUEST_CALLBACK in actions
             ):
@@ -335,7 +338,14 @@ class KuralEngine:
 
     @staticmethod
     def _execute_action(tx: RepositoryTransaction, conversation: Conversation,
-                        action: Action, requested_at: datetime | None) -> None:
+                        action: Action, requested_at: datetime | None, customer_text: str = "") -> None:
+        if action == Action.CREATE_HUMAN_SUPPORT_CASE:
+            case = tx.create_case(conversation.session_id, conversation.customer_ref, "HUMAN_REQUEST",
+                                  "Customer asked to speak with a person during the AI call.", "OPEN")
+            conversation.case_id = case.case_id
+            tx.add_audit_event(conversation.session_id, "case_creation", conversation.state,
+                               {"case_id": case.case_id, "category": "HUMAN_REQUEST"})
+            return
         if action == Action.CREATE_APP_UPDATE_CASE:
             category = "APP_UPDATE_FAILURE"
             description = "Customer reported an app update failure."
@@ -353,7 +363,26 @@ class KuralEngine:
             tx.add_audit_event(conversation.session_id, "support_case_created", conversation.state,
                                {"case_id": case.case_id, "category": case.category})
         elif action == Action.REQUEST_CALLBACK:
-            callback = tx.request_callback(conversation.session_id, conversation.case_id, requested_at)
+            scheduled = requested_at
+            readback = None
+            rule = None
+            if scheduled is None and customer_text:
+                from kural.policy.calling_policy import evaluate_contact_time
+                from kural.scheduling.resolver import ResolveStatus, resolve_time_expression
+                from kural.config import get_settings
+                try:
+                    res = resolve_time_expression(customer_text)
+                except Exception:
+                    res = None
+                if res is not None and res.status == ResolveStatus.RESOLVED and res.resolved_datetime is not None:
+                    from datetime import timezone as _tz
+                    candidate = res.resolved_datetime.astimezone(_tz.utc)
+                    if evaluate_contact_time(candidate):
+                        scheduled, readback, rule = candidate, res.spoken_read_back, res.rule
+            callback = tx.request_callback(conversation.session_id, conversation.case_id, scheduled,
+                                           customer_ref=conversation.customer_ref, readback=readback,
+                                           rule=rule, raw_expression=customer_text[:255] if readback else None)
+            conversation.callback_readback = readback
             conversation.callback_id = callback.callback_id
             tx.add_audit_event(conversation.session_id, "callback_request", conversation.state,
                                {"callback_id": callback.callback_id, "case_id": callback.case_id})
@@ -376,7 +405,7 @@ class KuralEngine:
         global_responses = {
             Intent.FRAUD_REPORT: ("I’m treating this as a potential fraud concern. I cannot make a fraud determination. Please end this call and contact the bank through its official app or the number on your card.", State.FRAUD_ESCALATION),
             Intent.OPT_OUT: (approved.OPT_OUT_ACKNOWLEDGEMENT, State.OPT_OUT),
-            Intent.WANTS_HUMAN: (approved.SUPPORT_WORDING + " Goodbye.", State.HUMAN_ESCALATION),
+            Intent.WANTS_HUMAN: (approved.HUMAN_HANDOFF, State.HUMAN_ESCALATION),
             Intent.ASKS_IF_AI: ("Yes, I’m Subbu, an automated assistant from Town Bank. " + self._state_prompt(c.state), c.state),
             Intent.ASKS_IDENTITY: (
                 ("I'm Subbu, Town Bank's automated assistant. Am I speaking with Rahul?"
@@ -402,6 +431,10 @@ class KuralEngine:
             else:
                 c.repetition_count = 0
             response, target = global_responses[intent]
+            if intent == Intent.WANTS_HUMAN:
+                # Live transfer is not available on this channel: KURAL raises a real case and a
+                # callback request instead of promising a connection that cannot happen.
+                return response, target, (Action.CREATE_HUMAN_SUPPORT_CASE, Action.REQUEST_CALLBACK)
             action = Action.NO_OP if target == c.state else Action.END_SESSION
             return response, target, (action,)
 
@@ -573,7 +606,7 @@ class KuralEngine:
             c.detour_depth = 0
             c.return_state = None
             if intent in (Intent.AFFIRM, Intent.CALLBACK, Intent.UPDATE_FAILURE, Intent.APP_UPDATE_ISSUE, Intent.WANTS_HUMAN):
-                return "The prototype created an app-update support case and recorded a callback request. It does not place a real call. Goodbye.", State.CASE_CREATION, (Action.CREATE_APP_UPDATE_CASE, Action.REQUEST_CALLBACK)
+                return approved.ISSUE_CASE_CREATED, State.CASE_CREATION, (Action.CREATE_APP_UPDATE_CASE, Action.REQUEST_CALLBACK)
             return "Would you like me to request human follow-up for the update problem?", c.state, (Action.NO_OP,)
 
         return "This session has ended. Goodbye.", State.ENDED, (Action.END_SESSION,)

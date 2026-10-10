@@ -329,7 +329,7 @@ class RealtimeVoiceOrchestrator:
                 self._latest_partial_transcript = ""
                 return
 
-            logger.info("Turn finalization watchdog triggered (silence fallback) session=%s text=%s", self._session_id, clean)
+            logger.info("Turn finalization watchdog triggered (silence fallback) session=%s chars=%d", self._session_id, len(clean))
             await self._request_stt_flush()
             self._latest_partial_transcript = ""
             self._speech_active = False
@@ -365,15 +365,7 @@ class RealtimeVoiceOrchestrator:
 
             await self._send_json({"type": "connected", "session_id": session_id})
             if not resume:
-                cust_name = "Rahul Sharma"
-                try:
-                    s_rec = self.repository.get_session(session_id)
-                    if s_rec and s_rec.customer_ref:
-                        c_obj = self.repository.get_customer(s_rec.customer_ref)
-                        if c_obj and c_obj.name:
-                            cust_name = c_obj.name
-                except Exception:
-                    pass
+                cust_name = self._customer_first_name()
                 opening = KuralEngine.opening_message(cust_name)
                 self._recent_assistant_utterances.append(opening)
                 self._is_assistant_speaking = True
@@ -399,10 +391,13 @@ class RealtimeVoiceOrchestrator:
                 self._closed.set()
                 self._cancel_silence_timer()
                 self._cancel_turn_finalizer()
-                if self._pcm_buffer:
+                from kural.config import get_settings as _gs
+                recorded = False
+                if self._pcm_buffer and _gs().call_recording_enabled:
                     try:
                         from kural.services.recording_service import save_pcm_to_wav
                         save_pcm_to_wav(self._session_id, bytes(self._pcm_buffer))
+                        recorded = True
                     except Exception as exc:
                         logger.debug("Failed to persist call WAV recording for session %s: %s", self._session_id, exc)
                 try:
@@ -413,17 +408,50 @@ class RealtimeVoiceOrchestrator:
                         with db.session() as s:
                             cr = s.scalar(select(CallRecordRow).where(CallRecordRow.session_id == self._session_id))
                             if cr:
+                                from datetime import datetime as _dt, timezone as _tz
                                 cr.duration_sec = int(time.perf_counter() - call_started)
-                                cr.recording_available = True
+                                cr.recording_available = recorded
                                 cr.status = "COMPLETED"
+                                cr.ended_at = _dt.now(_tz.utc)
                                 if self._silence_state == "CLOSING":
                                     cr.disposition = "NO_RESPONSE"
                                     cr.summary = "Call closed automatically due to customer silence."
+                                elif not cr.disposition or cr.disposition == "IN_PROGRESS":
+                                    cr.disposition = self._final_disposition()
+                                if self._turn_sequence > 0:
+                                    cr.connected = True
                                 s.commit()
                 except Exception as exc:
                     logger.warning("Failed to finalize call record duration for session %s: %s", self._session_id, exc)
         finally:
             metrics_registry.active_voice_sessions.dec(1.0)
+
+    def _customer_first_name(self) -> str:
+        """First name from the customer record; a neutral question if none is on file."""
+        try:
+            db = getattr(self.repository, "database", None)
+            sess = self.repository.get_session(self._session_id)
+            if db is not None and sess is not None:
+                from kural.persistence.models import CustomerRow
+                with db.session() as s:
+                    cust = s.get(CustomerRow, sess.customer_ref)
+                    if cust and cust.full_name:
+                        return cust.full_name.split()[0]
+        except Exception:
+            pass
+        return "the account holder"
+
+    def _final_disposition(self) -> str:
+        sess = self.repository.get_session(self._session_id)
+        if sess is None:
+            return "ABANDONED"
+        state = sess.state.value if hasattr(sess.state, "value") else str(sess.state)
+        if sess.case_id:
+            return "ESCALATED"
+        if sess.callback_id:
+            return "CALLBACK_SCHEDULED"
+        return {"OPT_OUT": "OPTED_OUT", "FRAUD_ESCALATION": "ESCALATED", "HUMAN_ESCALATION": "ESCALATED",
+                "ENDED": "CLOSED", "CLOSING": "CLOSED"}.get(state, "ABANDONED")
 
     async def _read_microphone(self, call_started: float) -> None:
         while not self._closed.is_set():
@@ -545,17 +573,17 @@ class RealtimeVoiceOrchestrator:
 
                 # 1. Reject noise, fillers, single-character hallucinations
                 if clean_lower in DISCARD_NOISE_TOKENS:
-                    logger.info("Discarding noise/filler token session=%s: %s", self._session_id, transcript)
+                    logger.info("Discarding noise/filler token session=%s", self._session_id)
                     if not self._speech_active and self._silence_state == "IDLE" and not (self._is_assistant_speaking or self._is_client_playing):
                         self._arm_silence_timer(call_started)
                     continue
                 if len(clean) < 2 and clean_lower not in LEGITIMATE_SHORT_REPLIES:
-                    logger.info("Discarding low-energy/noise STT transcript session=%s: %s", self._session_id, transcript)
+                    logger.info("Discarding low-energy/noise STT transcript session=%s", self._session_id)
                     if not self._speech_active and self._silence_state == "IDLE" and not (self._is_assistant_speaking or self._is_client_playing):
                         self._arm_silence_timer(call_started)
                     continue
                 if len(clean.split()) == 1 and len(clean) < 3 and clean_lower not in LEGITIMATE_SHORT_REPLIES:
-                    logger.info("Discarding single-char non-reply token session=%s: %s", self._session_id, transcript)
+                    logger.info("Discarding single-char non-reply token session=%s", self._session_id)
                     if not self._speech_active and self._silence_state == "IDLE" and not (self._is_assistant_speaking or self._is_client_playing):
                         self._arm_silence_timer(call_started)
                     continue
@@ -568,15 +596,12 @@ class RealtimeVoiceOrchestrator:
                 )
 
                 if is_currently_speaking and is_acoustic_echo(clean, self._recent_assistant_utterances, is_currently_speaking=True):
-                    logger.info(
-                        "Discarding acoustic echo self-transcription session=%s (is_speaking=%s): %s",
-                        self._session_id, is_currently_speaking, transcript,
-                    )
+                    logger.info("Discarding acoustic echo self-transcription session=%s", self._session_id)
                     continue
 
                 # 3. User barge-in during assistant speech
                 if is_currently_speaking:
-                    logger.info("User barge-in detected session=%s: %s", self._session_id, transcript)
+                    logger.info("User barge-in detected session=%s", self._session_id)
                     if self._tts_task is not None and not self._tts_task.done():
                         self._tts_task.cancel()
                         await asyncio.gather(self._tts_task, return_exceptions=True)
@@ -617,7 +642,7 @@ class RealtimeVoiceOrchestrator:
             now = time.perf_counter()
             # Deduplication: suppress identical transcript arriving within 2.5 seconds
             if clean.lower() == self._last_processed_transcript.lower() and (now - self._last_processed_at) < 2.5:
-                logger.info("Discarding duplicate final transcript session=%s: %s", self._session_id, transcript)
+                logger.info("Discarding duplicate final transcript session=%s", self._session_id)
                 return
 
             self._last_processed_transcript = clean

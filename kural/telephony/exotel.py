@@ -72,12 +72,23 @@ class ExotelTelephonyProvider(TelephonyProvider):
                 error_code="PROVIDER_NOT_CONFIGURED",
             )
 
+        app_id = os.environ.get("EXOTEL_APP_ID", "")
+        if not app_id:
+            return TelephonyCallResult(success=False, call_id=request.call_id, provider_call_sid="",
+                                       status=TelephonyCallStatus.FAILED, error_code="PROVIDER_NOT_CONFIGURED",
+                                       message="EXOTEL_APP_ID (the call flow connecting to the AVA voice bot) is not set.")
         endpoint = f"{self.base_url}/Calls/connect.json"
+        from kural.config import get_settings
+        settings = get_settings()
         data = {
             "From": request.to_phone,
             "CallerId": self.caller_id,
+            "Url": f"http://my.exotel.com/{self.account_sid}/exoml/start_voice/{app_id}",
             "CallType": "trans",
             "CustomField": request.call_id,
+            "TimeLimit": os.environ.get("EXOTEL_TIME_LIMIT_SEC", "900"),
+            "StatusCallback": f"{settings.public_base_url}/api/v1/telephony/webhooks?token={settings.telephony_webhook_token}",
+            "StatusCallbackContentType": "application/json",
         }
 
         try:
@@ -90,7 +101,11 @@ class ExotelTelephonyProvider(TelephonyProvider):
                 if resp.status_code in (200, 201):
                     body = resp.json()
                     call_obj = body.get("Call", {})
-                    sid = call_obj.get("Sid", f"EXO-{uuid4().hex[:8].upper()}")
+                    sid = call_obj.get("Sid")
+                    if not sid:
+                        return TelephonyCallResult(success=False, call_id=request.call_id, provider_call_sid="",
+                                                   status=TelephonyCallStatus.FAILED, error_code="GATEWAY_ERROR",
+                                                   message="Exotel response did not include a call Sid")
                     return TelephonyCallResult(
                         success=True,
                         call_id=request.call_id,
@@ -101,7 +116,7 @@ class ExotelTelephonyProvider(TelephonyProvider):
                         raw_response=body,
                     )
                 else:
-                    self._last_error = f"HTTP {resp.status_code}: {resp.text}"
+                    self._last_error = f"HTTP {resp.status_code}"
                     return TelephonyCallResult(
                         success=False,
                         call_id=request.call_id,
@@ -109,17 +124,17 @@ class ExotelTelephonyProvider(TelephonyProvider):
                         status=TelephonyCallStatus.FAILED,
                         message=f"Exotel gateway rejected call request: {resp.status_code}",
                         error_code="GATEWAY_ERROR",
-                        raw_response={"status_code": resp.status_code, "detail": resp.text},
+                        raw_response={"status_code": resp.status_code},
                     )
         except Exception as exc:
             self._last_error = str(exc)
-            logger.error("Failed to initiate Exotel call: %s", exc)
+            logger.error("Failed to initiate Exotel call: %s", type(exc).__name__)
             return TelephonyCallResult(
                 success=False,
                 call_id=request.call_id,
                 provider_call_sid="",
                 status=TelephonyCallStatus.FAILED,
-                message=f"Network error contacting Exotel: {exc}",
+                message=f"Network error contacting Exotel: {type(exc).__name__}",
                 error_code="CONNECTION_ERROR",
             )
 
@@ -204,46 +219,19 @@ class ExotelTelephonyProvider(TelephonyProvider):
                 error_code="PROVIDER_NOT_CONFIGURED",
             )
 
-        # Exotel live call redirect / transfer endpoint
-        endpoint = f"{self.base_url}/Calls/{provider_call_sid}/transfer.json"
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.post(
-                    endpoint,
-                    data={"Url": f"transfer_to_agent?agent_phone={agent_phone}"},
-                    auth=(self.api_key, self.api_token),
-                )
-                if resp.status_code in (200, 202):
-                    return TelephonyTransferResult(
-                        success=True,
-                        call_id="",
-                        target_agent_id=agent_id,
-                        status="BRIDGED",
-                        message=f"Live bridge to agent {agent_id} initiated successfully",
-                    )
-                return TelephonyTransferResult(
-                    success=False,
-                    call_id="",
-                    target_agent_id=agent_id,
-                    status="FAILED",
-                    message=f"Gateway transfer failed: {resp.status_code}",
-                    error_code="TRANSFER_REJECTED",
-                )
-        except Exception as exc:
-            return TelephonyTransferResult(
-                success=False,
-                call_id="",
-                target_agent_id=agent_id,
-                status="FAILED",
-                message=str(exc),
-                error_code="TRANSFER_EXCEPTION",
-            )
+        # Exotel's REST API has no endpoint to transfer an in-progress call; agent bridging must be
+        # built into the Exotel call flow (Connect applet). Report that truthfully.
+        return TelephonyTransferResult(
+            success=False, call_id="", target_agent_id=agent_id, status="UNSUPPORTED",
+            message="Live transfer is not available through the Exotel REST API; configure a Connect applet in the call flow.",
+            error_code="TRANSFER_UNSUPPORTED",
+        )
 
     def verify_webhook_signature(
         self, payload_bytes: bytes, headers: Dict[str, str]
     ) -> bool:
         if not self.webhook_secret:
-            return True  # If no secret configured in sandbox/dev, pass through
+            return False  # fail closed; the router also accepts the shared TELEPHONY_WEBHOOK_TOKEN
         sig = headers.get("X-Exotel-Signature") or headers.get("x-exotel-signature")
         if not sig:
             return False
@@ -269,8 +257,9 @@ class ExotelTelephonyProvider(TelephonyProvider):
             "no-answer": TelephonyCallStatus.NO_ANSWER,
             "failed": TelephonyCallStatus.FAILED,
             "cancelled": TelephonyCallStatus.CANCELLED,
+            "canceled": TelephonyCallStatus.CANCELLED,
         }
-        status = status_map.get(status_str, TelephonyCallStatus.COMPLETED)
+        status = status_map.get(status_str, TelephonyCallStatus.FAILED)
 
         duration = None
         if "Duration" in payload or "CallDuration" in payload:
@@ -280,7 +269,7 @@ class ExotelTelephonyProvider(TelephonyProvider):
                 pass
 
         return TelephonyWebhookEvent(
-            event_id=payload.get("EventId", f"EXO-EVT-{uuid4().hex[:8].upper()}"),
+            event_id=payload.get("EventId") or f"{sid}:{status_str}",
             event_type=payload.get("EventType", "call.status"),
             call_id=call_id,
             provider_call_sid=sid,

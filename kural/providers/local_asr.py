@@ -1,4 +1,9 @@
-"""Local, on-premises bank-controlled speech recognition provider adapter.
+"""TEST SIMULATOR of an on-premises speech recogniser (returns fixed transcripts).
+
+It performs no recognition and must never serve real calls; the provider factory refuses it
+outside APP_ENV=test. Kept for contract tests of the speech-boundary policy.
+
+Original description: local, on-premises bank-controlled speech recognition provider adapter.
 
 Engine: Faster-Whisper (Whisper-large-v3-turbo / medium.en) / NeMo Conformer-CTC on Triton.
 Zero Egress: All inference executes strictly within the bank private perimeter.

@@ -13,6 +13,15 @@ def disable_external_llm_calls(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def isolated_database_url(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Apps built without an explicit repository use a per-test database, never the developer's."""
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'app.db').as_posix()}")
+    monkeypatch.setenv("KURAL_RUN_WORKERS", "false")
+    from kural.config import reload_settings
+    reload_settings()
+
+
+@pytest.fixture(autouse=True)
 def functional_test_principal(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Functional API tests run as an authenticated operator.
 

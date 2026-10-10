@@ -98,6 +98,9 @@ def get_telephony_provider() -> TelephonyProvider:
     if provider_type == "exotel":
         _active_telephony_provider = ExotelTelephonyProvider()
     elif provider_type == "sandbox":
+        from kural.config import get_settings
+        if get_settings().is_production:
+            raise RuntimeError("The sandbox telephony simulator cannot be used in production")
         _active_telephony_provider = SandboxTelephonyProvider()
     elif provider_type in ("", "disabled", "none"):
         # If EXOTEL_API_KEY is present, auto-detect Exotel
