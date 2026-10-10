@@ -19,7 +19,10 @@ export function LoginPage() {
   return (
     <main className="login-shell">
       <form className="login-card" onSubmit={submit} aria-labelledby="login-title">
-        <div className="login-brand"><span className="login-mark" aria-hidden="true">K</span><span>KURAL AVA</span></div>
+        <div className="login-brand">
+          <img src="/logo.png" alt="AVA Logo" className="login-logo-img" />
+          <span>KURAL AVA</span>
+        </div>
         <h1 id="login-title">Sign in to Operations</h1>
         <p className="login-sub">Use the account issued by your bank administrator.</p>
         <label>Username<input autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required /></label>

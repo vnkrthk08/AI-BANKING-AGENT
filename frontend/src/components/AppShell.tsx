@@ -131,7 +131,7 @@ export function AppShell() {
         {/* Sidebar */}
         <aside className="side" aria-label="Primary">
           <div className="side-brand">
-            <span className="side-mark">K</span>
+            <img src="/logo.png" alt="AVA Logo" className="side-logo-img" />
             <div>
               <b>KURAL AVA</b>
               <small>Town Bank · Operations</small>
