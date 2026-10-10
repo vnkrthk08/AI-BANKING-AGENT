@@ -8,10 +8,12 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkle,
+  Trash,
   UsersThree,
 } from "@phosphor-icons/react";
 import { useAuth } from "../auth/AuthContext";
 import { useApi } from "../hooks/useApi";
+import { apiJson } from "../services/http";
 import { fmtRelative, useToast } from "../components/ui";
 
 interface DirectoryUser {
@@ -51,6 +53,16 @@ interface DirectoryResponse {
   roles_present: string[];
 }
 
+interface DemoDataStatus {
+  is_loaded: boolean;
+  customers_count: number;
+  campaigns_count: number;
+  calls_count: number;
+  cases_count: number;
+  callbacks_count: number;
+  summary: string;
+}
+
 const ROLE_THEMES: Record<string, { color: string; bg: string; border: string; label: string }> = {
   SUPER_ADMIN: { color: "#8b5cf6", bg: "rgba(139, 92, 246, 0.12)", border: "#8b5cf6", label: "Super Admin (Platform Exec)" },
   OPS_MANAGER: { color: "#10b981", bg: "rgba(16, 185, 129, 0.12)", border: "#10b981", label: "Operations Manager" },
@@ -82,12 +94,15 @@ const MATRIX_CAPABILITIES = [
 export function AdminCommandCenterPage() {
   const { user, impersonate } = useAuth();
   const { data, loading, reload } = useApi<DirectoryResponse>("/api/v1/auth/directory");
+  const { data: demoStatus, reload: reloadDemoStatus } = useApi<DemoDataStatus>("/api/v1/auth/demo-data/status");
   const toast = useToast();
 
   const [activeTab, setActiveTab] = useState<"directory" | "feed" | "matrix">("directory");
   const [roleFilter, setRoleFilter] = useState<string>("ALL");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [switching, setSwitching] = useState<string | null>(null);
+  const [seeding, setSeeding] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const users = data?.users || [];
 
@@ -136,6 +151,44 @@ export function AdminCommandCenterPage() {
     }
   };
 
+  const handleSeedDemoData = async () => {
+    try {
+      setSeeding(true);
+      toast.info("Populating Demo Data", "Seeding customers, active campaigns, call records, and cases…");
+      const res = await apiJson<{ status: string; counts: Record<string, number> }>("/api/v1/auth/demo-data/seed", {
+        method: "POST",
+      });
+      toast.ok(
+        "Presentation Data Loaded!",
+        `Seeded ${res.counts.customers} customers, ${res.counts.campaigns} campaigns, ${res.counts.calls} calls, and ${res.counts.cases} cases.`
+      );
+      void reloadDemoStatus();
+      void reload();
+    } catch (err) {
+      toast.bad("Seed Failed", err instanceof Error ? err.message : "Unable to seed demo data");
+    } finally {
+      setSeeding(false);
+    }
+  };
+
+  const handleResetDemoData = async () => {
+    try {
+      setResetting(true);
+      toast.info("Clearing Demo Data", "Wiping demo customers, campaigns, call logs, and cases…");
+      await apiJson("/api/v1/auth/demo-data/reset", { method: "POST" });
+      toast.ok(
+        "Demo Data Cleared",
+        "Platform fixtures successfully reset to pristine state. Staff accounts preserved."
+      );
+      void reloadDemoStatus();
+      void reload();
+    } catch (err) {
+      toast.bad("Reset Failed", err instanceof Error ? err.message : "Unable to reset demo data");
+    } finally {
+      setResetting(false);
+    }
+  };
+
   return (
     <div className="admin-page">
       {/* Executive Command Header */}
@@ -173,6 +226,42 @@ export function AdminCommandCenterPage() {
             <b className="kpi-val ok-text">Protected</b>
             <small>Zero-PII IT Boundary</small>
           </div>
+        </div>
+      </div>
+
+      {/* Presentation Demo Data Controls Bar */}
+      <div className="demo-controls-card">
+        <div className="demo-controls-left">
+          <div className="demo-status-pill-wrap">
+            <span className="demo-pill-title">Presentation Data Fixtures:</span>
+            <span className={`status-pill ${demoStatus?.is_loaded ? "loaded" : "empty"}`}>
+              {demoStatus?.is_loaded ? "● Active Fixtures Loaded" : "○ Pristine / Empty"}
+            </span>
+          </div>
+          <p className="demo-controls-desc">
+            {demoStatus?.is_loaded
+              ? `Currently loaded: ${demoStatus.summary}. Ready for comprehensive walkthrough.`
+              : "No demo fixtures populated. Click 'Populate Demo Data' to load customers, campaigns, calls, and cases."}
+          </p>
+        </div>
+
+        <div className="demo-controls-actions">
+          <button
+            className="btn primary demo-seed-btn"
+            disabled={seeding}
+            onClick={handleSeedDemoData}
+          >
+            <Sparkle size={16} weight="fill" />
+            {seeding ? "Populating Fixtures…" : "Populate Demo Data"}
+          </button>
+          <button
+            className="btn secondary demo-reset-btn"
+            disabled={resetting}
+            onClick={handleResetDemoData}
+          >
+            <Trash size={16} />
+            {resetting ? "Cleaning Data…" : "Clear / Reset Demo Data"}
+          </button>
         </div>
       </div>
 

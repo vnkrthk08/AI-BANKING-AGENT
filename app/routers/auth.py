@@ -386,3 +386,47 @@ def get_user_directory(
         "roles_present": list({u["role"] for u in enriched}),
     }
 
+
+@auth_router.post("/demo-data/seed")
+def seed_demo_data_endpoint(
+    request: Request,
+    principal: Principal = Depends(require("user:manage")),
+) -> Dict[str, Any]:
+    """Seed comprehensive banking demo data fixtures for presentations."""
+    db = getattr(request.app.state, "database", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not initialized")
+    from kural.services.demo_data_manager import seed_presentation_fixtures
+    counts = seed_presentation_fixtures(db)
+    _audit(request, "DEMO_DATA_SEEDED", principal.actor, principal.role, "FIXTURES", str(counts))
+    return {"status": "SEEDED", "counts": counts}
+
+
+@auth_router.post("/demo-data/reset")
+def reset_demo_data_endpoint(
+    request: Request,
+    principal: Principal = Depends(require("user:manage")),
+) -> Dict[str, Any]:
+    """Clear all presentation demo fixtures, preserving staff accounts and settings."""
+    db = getattr(request.app.state, "database", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not initialized")
+    from kural.services.demo_data_manager import reset_presentation_fixtures
+    result = reset_presentation_fixtures(db)
+    _audit(request, "DEMO_DATA_RESET", principal.actor, principal.role, "FIXTURES")
+    return result
+
+
+@auth_router.get("/demo-data/status")
+def get_demo_data_status_endpoint(
+    request: Request,
+    principal: Principal = Depends(require("user:manage")),
+) -> Dict[str, Any]:
+    """Check whether presentation demo data is currently loaded."""
+    db = getattr(request.app.state, "database", None)
+    if not db:
+        raise HTTPException(status_code=500, detail="Database not initialized")
+    from kural.services.demo_data_manager import get_demo_fixtures_status
+    return get_demo_fixtures_status(db)
+
+
