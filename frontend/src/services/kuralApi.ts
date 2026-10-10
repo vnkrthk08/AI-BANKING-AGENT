@@ -1,3 +1,4 @@
+import { apiFetch, streamTicket } from "./http";
 import type { CaseRecord, SessionDetail, SessionResponse, TurnResponse } from "../types";
 
 export interface VoiceTurnResponse {
@@ -33,15 +34,14 @@ export interface RealtimeVoiceConnection {
   sendAudio: (pcm16: ArrayBuffer) => void;
   sendTiming: (name: string, elapsedMs: number) => void;
   sendText: (text: string) => void;
+  sendPlaybackStatus: (status: "playing" | "idle") => void;
+  retrySpeech: () => void;
   end: () => void;
   close: () => void;
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-  });
+  const response = await apiFetch(url, init);
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { detail?: string } | null;
     throw new Error(body?.detail ?? `KURAL request failed (${response.status})`);
@@ -51,10 +51,11 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const kuralApi = {
   health: () => request<{ status: string }>("/health"),
-  createSession: () => request<SessionResponse>("/api/v1/sessions", {
+  createSession: (customerRef?: string) => request<SessionResponse>("/api/v1/sessions", {
     method: "POST",
-    body: JSON.stringify({ customer_ref: "CUST001" }),
+    body: JSON.stringify({ customer_ref: customerRef }),
   }),
+
   sendMessage: (sessionId: string, text: string) => request<TurnResponse>(
     `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
     { method: "POST", body: JSON.stringify({ text }) },
@@ -63,7 +64,7 @@ export const kuralApi = {
     const form = new FormData();
     form.append("session_id", sessionId);
     form.append("audio", audio, "customer.webm");
-    const response = await fetch("/api/v1/voice/turn", { method: "POST", body: form });
+    const response = await apiFetch("/api/v1/voice/turn", { method: "POST", body: form });
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as { detail?: string } | null;
       throw new Error(body?.detail ?? `Voice turn failed (${response.status})`);
@@ -136,9 +137,9 @@ export const kuralApi = {
     sessionId: string,
     handlers: RealtimeVoiceHandlers,
     resume = false,
-  ): Promise<RealtimeVoiceConnection> => {
+  ): Promise<RealtimeVoiceConnection> => streamTicket(sessionId).then((ticket) => {
     const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${scheme}//${window.location.host}/api/v1/voice/realtime`);
+    const socket = new WebSocket(`${scheme}//${window.location.host}/api/v1/voice/realtime?session_id=${encodeURIComponent(sessionId)}&ticket=${encodeURIComponent(ticket)}`);
     socket.binaryType = "arraybuffer";
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -157,6 +158,12 @@ export const kuralApi = {
           },
           sendText: (text) => {
             if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "user_text", text }));
+          },
+          sendPlaybackStatus: (status) => {
+            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "playback_status", status }));
+          },
+          retrySpeech: () => {
+            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "retry_speech" }));
           },
           end: () => {
             if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "end" }));
@@ -189,14 +196,71 @@ export const kuralApi = {
         }
       };
     });
-  },
+  }),
+
   session: (sessionId: string) => request<SessionDetail>(`/api/v1/sessions/${encodeURIComponent(sessionId)}`),
   cases: () => request<CaseRecord[]>("/api/v1/cases"),
-  resetDemo: () =>
-    request<{ status: string; message: string }>("/api/demo/reset", {
+  getNotifications: (unreadOnly?: boolean) =>
+    request<{ notifications: AppNotification[]; unread_count: number; total: number }>(
+      "/api/notifications" + (unreadOnly ? "?unread_only=true" : "")
+    ),
+  markNotificationRead: (id: string) =>
+    request<{ success: boolean; id: string }>(`/api/notifications/${encodeURIComponent(id)}/read`, {
+      method: "PATCH",
+    }),
+  markAllNotificationsRead: () =>
+    request<{ success: boolean; marked_count: number }>("/api/notifications/read-all", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
+    }),
+  getNotificationChannels: () =>
+    request<{ channels: NotificationChannelStatus[] }>("/api/notifications/channels"),
+  getTelephonyStatus: () =>
+    request<{
+      provider: string;
+      status: string;
+      is_live: boolean;
+      caller_id: string | null;
+      last_health_check: string | null;
+      last_error: string | null;
+      details: Record<string, unknown>;
+    }>("/api/v1/telephony/status"),
+  dialTelephonyCall: (toPhone: string, customerRef?: string, campaignId?: string) =>
+    request<{
+      success: boolean;
+      call_id: string;
+      provider_call_sid: string;
+      status: string;
+      message: string;
+    }>("/api/v1/telephony/calls", {
+      method: "POST",
+      body: JSON.stringify({
+        to_phone: toPhone,
+        customer_ref: customerRef,
+        campaign_id: campaignId,
+      }),
     }),
 };
+
+export interface AppNotification {
+  id: string;
+  recipient_role: string | null;
+  user_id: string | null;
+  title: string;
+  message: string;
+  level: "INFO" | "WARNING" | "ERROR" | "SUCCESS";
+  category: "ESCALATION" | "CALLBACK" | "TELEPHONY" | "SYSTEM";
+  link_url: string | null;
+  is_read: boolean;
+  created_at: string;
+  read_at: string | null;
+}
+
+export interface NotificationChannelStatus {
+  channel: string;
+  label: string;
+  status: string;
+  description: string;
+  is_active: boolean;
+}
+
 

@@ -7,6 +7,13 @@ class KuralPcmCaptureProcessor extends AudioWorkletProcessor {
     this.previous = 0;
     this.hasPrevious = false;
     this.pending = [];
+    this.isSpeaking = false;
+
+    this.port.onmessage = (event) => {
+      if (event.data && typeof event.data.isSpeaking === "boolean") {
+        this.isSpeaking = event.data.isSpeaking;
+      }
+    };
   }
 
   process(inputs) {
@@ -28,8 +35,24 @@ class KuralPcmCaptureProcessor extends AudioWorkletProcessor {
 
     while (this.pending.length >= 320) {
       const frame = this.pending.splice(0, 320);
+      let sumSq = 0;
+      for (let i = 0; i < 320; i += 1) {
+        sumSq += frame[i] * frame[i];
+      }
+      const rms = Math.sqrt(sumSq / 320);
+
+      // Acoustic Gating: when assistant is actively speaking through device speakers,
+      // attenuate speaker leakage (RMS < 0.015) while preserving user speech and barge-in (RMS >= 0.015)
+      const isLeakingSpeaker = this.isSpeaking && (isNaN(rms) || rms < 0.015);
       const pcm = new Int16Array(320);
-      for (let i = 0; i < 320; i += 1) pcm[i] = Math.round(frame[i] * (frame[i] < 0 ? 32768 : 32767));
+      if (isLeakingSpeaker) {
+        for (let i = 0; i < 320; i += 1) pcm[i] = 0;
+      } else {
+        for (let i = 0; i < 320; i += 1) {
+          const s = Number.isFinite(frame[i]) ? frame[i] : 0;
+          pcm[i] = Math.round(s * (s < 0 ? 32768 : 32767));
+        }
+      }
       this.port.postMessage(pcm.buffer, [pcm.buffer]);
     }
     return true;

@@ -1,194 +1,108 @@
-import { useMemo, useState } from "react";
-import { ArrowRight, Pause, Play, Plus } from "@phosphor-icons/react";
-import { PageHeading } from "../components/PageHeading";
-import { PageState } from "../components/PageState";
-import { StatusPill } from "../components/StatusPill";
-import { Panel } from "../components/Panel";
-import { useDashboard } from "../hooks/DashboardContext";
-import { useRole } from "../hooks/useRole";
-import { hasAction } from "../config/permissions";
-import { dashboardApi } from "../services/dashboardApi";
-import type { Campaign } from "../types";
+import { useState } from "react";
+import { CheckCircle, Megaphone, Plus, UploadSimple, XCircle } from "@phosphor-icons/react";
+import { useApi } from "../hooks/useApi";
+import { useAuth } from "../auth/AuthContext";
+import { apiJson } from "../services/http";
+import { Badge, Drawer, Empty, ErrorNote, Loading, Modal, PageHead, Panel, fmtDateTime, titleCase } from "../components/ui";
+
+interface Campaign { id: string; name: string; objective: string; status: string; category: string; scriptVersion: string; languages: string[]; region: string; maxAttempts: number; retryGapHours: number; maxConcurrent: number; approvedBy: string | null; approvedAt: string | null; createdBy: string | null; callsDialed: number; answerRate: number; contactStats: Record<string, number>; updatedAt: string }
+interface Preflight { ready: boolean; checks: { key: string; label: string; ok: boolean; detail: string }[]; eligible_contacts: number; calling_window_open: boolean; calling_window_note: string | null }
+interface Contact { contact_id: string; customer_ref: string; phone: string; status: string; attempts_count: number; last_disposition: string | null; next_attempt_at: string | null }
+
+function total(stats: Record<string, number>) { return Object.values(stats).reduce((a, b) => a + b, 0); }
+
+function CampaignDrawer({ c, onClose, onChanged }: { c: Campaign; onClose: () => void; onChanged: () => void }) {
+  const { can } = useAuth();
+  const pre = useApi<Preflight>(`/api/campaigns/${c.id}/preflight`, [c.id, c.status]);
+  const contacts = useApi<Contact[]>(`/api/campaigns/${c.id}/contacts?limit=200`, [c.id]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<null | "cancel">(null);
+  const act = async (path: string, body?: BodyInit) => {
+    setBusy(true); setErr(null);
+    try { await apiJson(`/api/campaigns/${c.id}/${path}`, { method: "POST", body: body ?? "{}" }); onChanged(); void pre.reload(); void contacts.reload(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "Action failed"); } finally { setBusy(false); }
+  };
+  const importCsv = (file: File) => { const fd = new FormData(); fd.append("file", file); void act("contacts/import", fd); };
+  const s = c.status;
+  return (
+    <Drawer title={c.name} sub={`${c.id} · ${c.objective}`} onClose={onClose} footer={<>
+      {s === "DRAFT" && can("campaign:approve") && <button className="btn" disabled={busy} onClick={() => act("approve")}>Approve for calling</button>}
+      {(s === "APPROVED" || s === "PAUSED") && can("campaign:execute") && <button className="btn primary" disabled={busy || !pre.data?.ready} onClick={() => act(s === "PAUSED" ? "resume" : "start")} title={pre.data?.ready ? "" : "Resolve the preflight checks first"}>{s === "PAUSED" ? "Resume" : "Start campaign"}</button>}
+      {s === "ACTIVE" && can("campaign:execute") && <button className="btn" disabled={busy} onClick={() => act("pause")}>Pause</button>}
+      {!["COMPLETED", "CANCELLED"].includes(s) && can("campaign:execute") && <button className="btn danger" disabled={busy} onClick={() => setConfirm("cancel")}>Cancel campaign</button>}
+    </>}>
+      {err && <ErrorNote error={err} />}
+      <div className="actions"><Badge value={s} /><Badge value={c.category} tone={c.category === "SERVICE" ? "" : "warn"} /><span className="badge plain">Script {c.scriptVersion}</span></div>
+      <dl className="kv">
+        <dt>Languages</dt><dd>{c.languages.join(", ")}</dd><dt>Region</dt><dd>{c.region}</dd>
+        <dt>Attempts / gap</dt><dd>{c.maxAttempts} attempts, {c.retryGapHours}h apart</dd><dt>Concurrency</dt><dd>{c.maxConcurrent} simultaneous calls</dd>
+        <dt>Approval</dt><dd>{c.approvedBy ? `${c.approvedBy} · ${fmtDateTime(c.approvedAt)}` : "Not approved"}</dd>
+        <dt>Dialled / answered</dt><dd className="num">{c.callsDialed} · {c.callsDialed ? `${Math.round(c.answerRate * 100)}%` : "—"}</dd>
+      </dl>
+      <section><h3 className="section-title">Preflight</h3>
+        {pre.loading ? <Loading rows={3} /> : pre.data && <>
+          {pre.data.checks.map((k) => <div key={k.key} className="legend-row"><span style={{ display: "flex", gap: 8, alignItems: "center" }}>{k.ok ? <CheckCircle size={18} color="var(--ok)" weight="fill" /> : <XCircle size={18} color="var(--bad)" weight="fill" />}{k.label}</span><span className="small muted" style={{ textAlign: "right" }}>{k.detail}</span></div>)}
+          {pre.data.calling_window_note && <p className="small muted">{pre.data.calling_window_note}</p>}
+        </>}
+      </section>
+      <section><div className="actions" style={{ justifyContent: "space-between" }}><h3 className="section-title" style={{ margin: 0 }}>Contacts ({total(c.contactStats)})</h3>
+        {can("campaign:manage") && <label className="btn sm"><UploadSimple size={14} /> Import CSV<input type="file" accept=".csv" hidden onChange={(e) => e.target.files?.[0] && importCsv(e.target.files[0])} /></label>}</div>
+        <div className="chips" style={{ margin: "8px 0" }}>{Object.entries(c.contactStats).map(([k, n]) => <span key={k} className="badge plain">{titleCase(k)} {n}</span>)}</div>
+        {contacts.data?.length ? <div className="table-wrap"><table className="t"><thead><tr><th>Customer</th><th>Status</th><th>Attempts</th></tr></thead><tbody>
+          {contacts.data.slice(0, 50).map((x) => <tr key={x.contact_id}><td className="primary-cell"><b>{x.customer_ref}</b><span className="num">{x.phone}</span></td><td><Badge value={x.status} /></td><td className="num">{x.attempts_count}</td></tr>)}
+        </tbody></table></div> : <p className="muted small">No contacts yet. CSV columns: customer_ref, phone.</p>}
+      </section>
+      {confirm && <Modal title="Cancel campaign?" onClose={() => setConfirm(null)} footer={<><button className="btn" onClick={() => setConfirm(null)}>Keep campaign</button><button className="btn danger solid" disabled={busy} onClick={() => act("cancel").then(() => setConfirm(null))}>Cancel campaign</button></>}>
+        <p style={{ margin: 0 }}>All pending contacts are cancelled and will not be dialled. Completed outcomes are kept.</p></Modal>}
+    </Drawer>
+  );
+}
 
 export function CampaignsPage() {
-  const { snapshot, loading, error, refresh } = useDashboard();
-  const [role] = useRole();
-  const [selected, setSelected] = useState<string | null>(null);
-  const [notice, setNotice] = useState("");
+  const { can } = useAuth();
+  const { data, error, loading, reload } = useApi<Campaign[]>("/api/campaigns");
+  const health = useApi<{ dialing: { stopped: boolean; reason: string | null; actor: string | null }; components: { key: string; status: string }[] }>("/api/system/health");
+  const [openId, setOpenId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [name, setName] = useState("");
-  const canManage = hasAction(role, "manage-campaigns");
-
-  const stats = useMemo(
-    () =>
-      snapshot?.campaigns.map((item) => ({
-        ...item,
-        closed: snapshot.calls.filter((call) => call.campaignId === item.id && call.disposition === "CLOSED").length,
-        connected: snapshot.calls.filter((call) => call.campaignId === item.id && call.connected).length,
-      })) ?? [],
-    [snapshot]
-  );
-
-  if (!snapshot) return <PageState loading={loading} error={error} onRetry={() => void refresh()} />;
-  const activeId = selected ?? snapshot.campaigns[0]?.id;
-  const campaign = snapshot.campaigns.find((item) => item.id === activeId);
-
-  async function toggle(id: string, status: string) {
-    await dashboardApi.updateCampaign(id, { status });
-    await dashboardApi.recordAudit("CAMPAIGN_STATUS_CHANGED", "CAMPAIGN", id, role, `Status updated to ${status}`);
-    await refresh();
-    setNotice(`Campaign ${status.toLowerCase()} successfully.`);
-  }
-
-  async function createCampaign() {
-    const title = name.trim();
-    if (!title) return;
-    const newCamp: Campaign = {
-      id: `CMP-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
-      name: title,
-      objective: "Service Support & Adoption",
-      status: "DRAFT",
-      scriptVersion: "v1.1",
-      segmentSize: 1250,
-      maxAttempts: 2,
-      retryGapHours: 24,
-      languages: ["English", "Tamil", "Hindi"],
-      region: "All India",
-      callsDialed: 0,
-      answerRate: 0,
-      updatedAt: new Date().toISOString(),
-    };
-    await dashboardApi.createCampaign(newCamp);
-    await dashboardApi.recordAudit("CAMPAIGN_CREATED", "CAMPAIGN", newCamp.id, role, `Draft campaign ${newCamp.name} created`);
-    await refresh();
-    setSelected(newCamp.id);
-    setName("");
-    setCreating(false);
-    setNotice("Draft campaign created successfully.");
-  }
-
+  const [form, setForm] = useState({ name: "", objective: "App update support", scriptVersion: "v1.0", languages: "English, Hindi", maxAttempts: 3, retryGapHours: 24, maxConcurrent: 2 });
+  const [err, setErr] = useState<string | null>(null);
+  const open = data?.find((c) => c.id === openId) ?? null;
+  const create = async () => {
+    try {
+      await apiJson("/api/campaigns", { method: "POST", body: JSON.stringify({ ...form, languages: form.languages.split(",").map((s) => s.trim()).filter(Boolean), category: "SERVICE" }) });
+      setCreating(false); void reload();
+    } catch (e) { setErr(e instanceof Error ? e.message : "Could not create"); }
+  };
+  const tel = health.data?.components.find((c) => c.key === "telephony")?.status;
   return (
     <>
-      <PageHeading
-        eyebrow="OUTBOUND PROGRAMS"
-        title="Campaigns"
-        description="Manage outbound campaigns, retry cadence, conversational scripts, and cohort performance."
-        actions={
-          canManage && (
-            <button className="ops-button ops-button-primary" onClick={() => setCreating((value) => !value)}>
-              <Plus size={15} />
-              New campaign
-            </button>
-          )
-        }
-      />
-      {notice && (
-        <div className="ops-notice-banner" role="status">
-          {notice}
-          <button onClick={() => setNotice("")}>Dismiss</button>
-        </div>
-      )}
-      {creating && (
-        <form
-          className="ops-inline-create"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void createCampaign();
-          }}
-        >
-          <label>
-            Campaign name
-            <input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="e.g. Town Bank Mobile App v2.4 Rollout"
-              required
-            />
-          </label>
-          <span>Standard retry policy: 2 maximum attempts with a 24-hour spacing window.</span>
-          <button className="ops-button ops-button-primary">Create draft</button>
-          <button type="button" className="ops-text-button" onClick={() => setCreating(false)}>
-            Cancel
-          </button>
-        </form>
-      )}
-      <div className="ops-campaign-layout">
-        <section className="ops-campaign-list">
-          {snapshot.campaigns.map((item) => (
-            <button
-              key={item.id}
-              className={`ops-campaign-row ${activeId === item.id ? "active" : ""}`}
-              onClick={() => setSelected(item.id)}
-            >
-              <span>
-                <strong>{item.name}</strong>
-                <small>
-                  {item.objective} · {item.id}
-                </small>
-              </span>
-              <StatusPill value={item.status} />
-              <span className="ops-campaign-mini">
-                {item.callsDialed.toLocaleString("en-IN")} dialed <b>{(item.answerRate * 100).toFixed(0)}% answer</b>
-              </span>
-            </button>
-          ))}
-        </section>
-        {campaign && (
-          <div className="ops-campaign-detail">
-            <Panel title={campaign.name} subtitle={`${campaign.id} · ${campaign.objective}`} actions={<StatusPill value={campaign.status} />}>
-              <div className="ops-campaign-kpis">
-                <div>
-                  <small>SEGMENT</small>
-                  <strong>{campaign.segmentSize.toLocaleString("en-IN")}</strong>
-                </div>
-                <div>
-                  <small>DIALED</small>
-                  <strong>{campaign.callsDialed.toLocaleString("en-IN")}</strong>
-                </div>
-                <div>
-                  <small>ANSWER RATE</small>
-                  <strong>{(campaign.answerRate * 100).toFixed(1)}%</strong>
-                </div>
-              </div>
-              <div className="ops-fact-list">
-                <span>Script version<strong>{campaign.scriptVersion} (Subbu v1.1 Active)</strong></span>
-                <span>Retry rules<strong>Up to {campaign.maxAttempts} attempts · {campaign.retryGapHours}h minimum gap</strong></span>
-                <span>Languages<strong>{campaign.languages.join(", ")}</strong></span>
-                <span>Region<strong>{campaign.region}</strong></span>
-                <span>Last updated<strong>{new Date(campaign.updatedAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} IST</strong></span>
-              </div>
-              {canManage && (
-                <div className="ops-campaign-actions">
-                  <button className="ops-button ops-button-secondary" onClick={() => setNotice("Script version Subbu v1.1 locked by compliance policy.")}>
-                    Review script version <ArrowRight size={14} />
-                  </button>
-                  <button
-                    className="ops-button ops-button-secondary"
-                    onClick={() => void toggle(campaign.id, campaign.status === "ACTIVE" ? "PAUSED" : "ACTIVE")}
-                  >
-                    {campaign.status === "ACTIVE" ? <><Pause size={14} />Pause campaign</> : <><Play size={14} />Resume campaign</>}
-                  </button>
-                </div>
-              )}
-            </Panel>
-            <Panel title="Cohort Comparison" subtitle="Comparative response metrics across campaign segments">
-              <div className="ops-ab-compare">
-                {stats.slice(0, 2).map((item) => (
-                  <div key={item.id}>
-                    <strong>{item.name}</strong>
-                    <span>{item.connected.toLocaleString("en-IN")} connected</span>
-                    <div className="ops-meter">
-                      <i style={{ width: `${item.answerRate * 100}%` }} />
-                    </div>
-                    <b>{(item.answerRate * 100).toFixed(1)}% answer rate</b>
-                  </div>
-                ))}
-              </div>
-              <p className="ops-helper">Performance metrics refreshed every 5 minutes from telephony gateway logs.</p>
-            </Panel>
-          </div>
+      <PageHead title="Campaigns" sub="Outbound service campaigns. Every launch requires compliance approval and passing preflight checks." actions={can("campaign:manage") && <button className="btn primary" onClick={() => setCreating(true)}><Plus size={16} /> New campaign</button>} />
+      {health.data?.dialing.stopped && <div className="alert bad"><span className="grow"><b>Outbound dialing is stopped.</b> {health.data.dialing.reason ?? ""} {health.data.dialing.actor ? `— ${health.data.dialing.actor}` : ""}</span></div>}
+      {tel && tel !== "HEALTHY" && <div className="alert info"><span className="grow">No live telephony provider is configured, so campaigns cannot start dialling. Configure telephony in the deployment settings.</span></div>}
+      {error && <ErrorNote error={error} onRetry={reload} />}
+      <Panel flush>
+        {loading ? <Loading /> : !data?.length ? <Empty icon={<Megaphone size={20} />} title="No campaigns yet" text="Create a draft, add contacts, get compliance approval, then start when preflight passes." /> : (
+          <div className="table-wrap"><table className="t"><thead><tr><th>Campaign</th><th>Status</th><th>Contacts</th><th>Dialled</th><th>Answer rate</th><th>Updated</th></tr></thead><tbody>
+            {data.map((c) => <tr key={c.id} className="click" tabIndex={0} onClick={() => setOpenId(c.id)} onKeyDown={(e) => e.key === "Enter" && setOpenId(c.id)}>
+              <td className="primary-cell"><b>{c.name}</b><span>{c.objective} · {c.languages.join(", ")}</span></td><td><Badge value={c.status} /></td>
+              <td className="num">{total(c.contactStats)}</td><td className="num">{c.callsDialed}</td><td className="num">{c.callsDialed ? `${Math.round(c.answerRate * 100)}%` : "—"}</td><td className="num">{fmtDateTime(c.updatedAt)}</td>
+            </tr>)}
+          </tbody></table></div>
         )}
-      </div>
+      </Panel>
+      {open && <CampaignDrawer c={open} onClose={() => setOpenId(null)} onChanged={() => void reload()} />}
+      {creating && <Modal title="New campaign" onClose={() => setCreating(false)} footer={<><button className="btn" onClick={() => setCreating(false)}>Cancel</button><button className="btn primary" disabled={!form.name.trim()} onClick={create}>Create draft</button></>}>
+        {err && <ErrorNote error={err} />}
+        <label className="field">Name<input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
+        <label className="field">Objective<input className="input" value={form.objective} onChange={(e) => setForm({ ...form, objective: e.target.value })} /></label>
+        <label className="field">Languages<input className="input" value={form.languages} onChange={(e) => setForm({ ...form, languages: e.target.value })} /><small>Comma separated</small></label>
+        <div className="grid cols-2" style={{ gap: 12 }}>
+          <label className="field">Max attempts<input className="input" type="number" min={1} max={5} value={form.maxAttempts} onChange={(e) => setForm({ ...form, maxAttempts: Number(e.target.value) })} /></label>
+          <label className="field">Retry gap (hours)<input className="input" type="number" min={1} value={form.retryGapHours} onChange={(e) => setForm({ ...form, retryGapHours: Number(e.target.value) })} /></label>
+        </div>
+        <p className="small muted" style={{ margin: 0 }}>Service campaigns only. Promotional calling is disabled pending legal sign-off.</p>
+      </Modal>}
     </>
   );
 }

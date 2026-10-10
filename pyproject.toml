@@ -14,11 +14,21 @@ dependencies = [
   "sarvamai>=0.1.33,<0.2",
   "python-multipart>=0.0.20,<1",
   "pyyaml>=6.0,<7",
+  "websockets>=12.0,<15",
+  "cryptography>=42.0,<46",
+  "pyjwt>=2.8.0,<3",
+  "prometheus-client>=0.20.0,<1",
 ]
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.2,<4"]
-dev = ["pytest>=8.3,<9", "httpx>=0.28,<1"]
+dev = [
+  "pytest>=8.3,<9",
+  "httpx>=0.28,<1",
+  "hypothesis>=6.100,<7",
+  "anyio>=4.0,<5",
+  "bandit>=1.7,<2",
+]
 
 [build-system]
 requires = ["setuptools>=75"]
@@ -29,5 +39,7 @@ include = ["app*", "kural*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q"
+markers = ["real_auth: run with genuine authentication and RBAC enforcement"]
 

@@ -6,7 +6,8 @@ import re
 import wave
 from pathlib import Path
 
-STORAGE_ROOT = Path("storage")
+STORAGE_ROOT = Path(os.getenv("KURAL_STORAGE_DIR", "storage"))
+_SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 RECORDINGS_DIR = STORAGE_ROOT / "recordings"
 
 
@@ -45,7 +46,7 @@ def redact_pii(text: str) -> str:
 
 
 def create_synthetic_wav(duration_sec: float = 1.0, sample_rate: int = 16000) -> bytes:
-    """Generates a valid silent 16-bit mono PCM WAV buffer for simulated call recordings."""
+    """Generate a silent 16-bit mono WAV buffer. Test utility only — never served as a call recording."""
     num_samples = int(duration_sec * sample_rate)
     pcm_data = b"\x00\x00" * num_samples
     buffer = io.BytesIO()
@@ -59,6 +60,8 @@ def create_synthetic_wav(duration_sec: float = 1.0, sample_rate: int = 16000) ->
 
 def save_pcm_to_wav(session_id: str, pcm_bytes: bytes, sample_rate: int = 16000) -> str:
     """Persists raw 16-bit mono PCM bytes to standard WAV file."""
+    if not _SAFE_ID.fullmatch(session_id or ""):
+        raise ValueError("Invalid recording identifier")
     ensure_storage_dirs()
     target_path = RECORDINGS_DIR / f"{session_id}.wav"
     with wave.open(str(target_path), "wb") as wav_file:
@@ -69,16 +72,10 @@ def save_pcm_to_wav(session_id: str, pcm_bytes: bytes, sample_rate: int = 16000)
     return str(target_path)
 
 
-def ensure_recording_exists(session_id: str, duration_sec: float = 2.0) -> str:
-    """Creates a synthetic recording if none exists on disk, returning path."""
-    ensure_storage_dirs()
-    target_path = RECORDINGS_DIR / f"{session_id}.wav"
-    if not target_path.exists():
-        wav_bytes = create_synthetic_wav(duration_sec=duration_sec)
-        target_path.write_bytes(wav_bytes)
-    return str(target_path)
-
-
 def get_recording_path(session_id: str) -> Path | None:
+    """Return the stored recording for a session, or None. Identifiers are validated so a
+    crafted id can never resolve outside the recordings directory."""
+    if not _SAFE_ID.fullmatch(session_id or ""):
+        return None
     path = RECORDINGS_DIR / f"{session_id}.wav"
     return path if path.exists() else None

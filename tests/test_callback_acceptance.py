@@ -92,6 +92,7 @@ def test_at_cb_2_reschedule_same_call_updates_same_record_and_shows_moved(clean_
             "scheduled_at_utc": dt_6pm.isoformat(),
             "scheduled_at_local": "Wednesday, 7 October, 6:00 PM IST",
             "raw_expression": "actually make it 6",
+            "on_behalf_of_customer": True,
         },
     )
     assert resp2.status_code == 200
@@ -129,7 +130,7 @@ def test_at_cb_3_customer_cancels_status_cancelled(clean_db, client):
     cb_id = create_resp.json()["callback_id"]
 
     # Cancel callback
-    cancel_resp = client.post(f"/api/callbacks/{cb_id}/cancel")
+    cancel_resp = client.post(f"/api/callbacks/{cb_id}/cancel", json={"on_behalf_of_customer": True})
     assert cancel_resp.status_code == 200
     cancelled_cb = cancel_resp.json()
     assert cancelled_cb["status"] == "CANCELLED"
@@ -192,8 +193,9 @@ def test_at_cb_5_staff_reschedules_in_dashboard(clean_db, client):
     )
     cb_id = create_resp.json()["callback_id"]
 
-    # Staff reschedules via PATCH /api/callbacks/{id}
-    new_utc = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)  # 5:30 PM IST
+    # Staff reschedules via PATCH /api/callbacks/{id} to the next permitted 5:30 PM IST slot
+    from kural.policy.calling_policy import next_permitted_slot
+    new_utc = next_permitted_slot(datetime.now(timezone.utc), hour=17) + timedelta(minutes=30)
     patch_resp = client.patch(
         f"/api/callbacks/{cb_id}",
         json={

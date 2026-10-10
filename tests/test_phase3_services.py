@@ -90,8 +90,11 @@ def test_campaign_service_lifecycle_and_retry(test_db):
 
 def test_agent_service_routing_and_workload(test_db):
     agent_svc = AgentService(test_db)
+    assert agent_svc.list_agents() == []  # runtime never seeds a fake roster
+    from tests.conftest import seed_test_agents
+    seed_test_agents(test_db)
     agents = agent_svc.list_agents()
-    assert len(agents) == 16  # 16 seeded agents
+    assert len(agents) == 16
 
     # Test smart matching for Tamil speaker
     best = agent_svc.find_best_agent(preferred_language="Tamil", issue_category="APP_SUPPORT")

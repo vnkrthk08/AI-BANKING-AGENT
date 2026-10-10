@@ -1,22 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  ArrowCounterClockwise,
-  CheckCircle,
-  Lock,
-  Microphone,
-  MicrophoneSlash,
-  PaperPlaneRight,
-  Phone,
-  PhoneDisconnect,
-  ShieldCheck,
-  Sparkle,
-  UserCircle,
-  Waveform,
-} from "@phosphor-icons/react";
+import { HandPalm, Microphone, MicrophoneSlash, Phone, PhoneDisconnect } from "@phosphor-icons/react";
+import { apiJson } from "../services/http";
 import { kuralApi } from "../services/kuralApi";
 import type { RealtimeVoiceConnection } from "../services/kuralApi";
 import type { PolicyDecision, TranscriptMessage, VoiceState } from "../types";
-import "../voice-agent.css";
 
 const TIMING_LABELS: Record<string, string> = {
   mic_capture_started: "Microphone capture",
@@ -125,11 +112,16 @@ export function TestConsolePage() {
   const callEndingPendingRef = useRef(false);
   const allTtsChunksReceivedRef = useRef(false);
   const endingFinalizeTimerRef = useRef<number | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animFrameRef = useRef<number | null>(null);
 
   const [online, setOnline] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [voiceState, setVoiceState] = useState<VoiceState>("READY");
+  const [audioEnergy, setAudioEnergy] = useState(0);
+  const [audioDb, setAudioDb] = useState(-60);
+
   const [kuralState, setKuralState] = useState("DISCLOSURE");
   const [intent, setIntent] = useState("");
   const [policy, setPolicy] = useState<PolicyDecision | null>(null);
@@ -140,21 +132,56 @@ export function TestConsolePage() {
   const [turnTelemetry, setTurnTelemetry] = useState<TurnTelemetry | null>(null);
   const [telemetryHistory, setTelemetryHistory] = useState<TurnTelemetry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [voiceErrorRecoverable, setVoiceErrorRecoverable] = useState(false);
+  const [micFramesTransmitted, setMicFramesTransmitted] = useState(0);
+  const [serverFramesCount, setServerFramesCount] = useState(0);
+  const micFramesCountRef = useRef(0);
   const [partialText, setPartialText] = useState("");
   const [connected, setConnected] = useState(false);
   const [callEnded, setCallEnded] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [finalDuration, setFinalDuration] = useState(0);
-  const [showTimings, setShowTimings] = useState(false);
-  const [showDebug, setShowDebug] = useState(true);
-  const [showTranscriptModal, setShowTranscriptModal] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [timings, setTimings] = useState<Record<string, number>>({});
   const [isMuted, setIsMuted] = useState(false);
   const [composerText, setComposerText] = useState("");
-  const [reachedStates, setReachedStates] = useState<string[]>(["Connected", "Disclosure"]);
   const [playingVoice, setPlayingVoice] = useState<string | null>(null);
   const [resetNotice, setResetNotice] = useState<string | null>(null);
   const sampleAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Customer context
+  const [customerInfo, setCustomerInfo] = useState({
+    name: "",
+    customerRef: "",
+    phone: "",
+    accountType: "",
+    language: "",
+    campaign: "Voice Studio session",
+  });
+  const [customersError, setCustomersError] = useState<string | null>(null);
+  void customersError;
+  const [availableCustomers, setAvailableCustomers] = useState<Array<Record<string, unknown>>>([]);
+  const [showCustomerPicker, setShowCustomerPicker] = useState(false);
+
+  useEffect(() => {
+    apiJson<Array<Record<string, unknown>>>("/api/customers?limit=50")
+      .then((data) => {
+        if (Array.isArray(data) && data.length === 0) setCustomersError("No customers are registered yet. Add or import customers in the Calls hub before starting a call.");
+        if (Array.isArray(data) && data.length > 0) {
+          setAvailableCustomers(data);
+          const first = data[0] as Record<string, string>;
+          setCustomerInfo({
+            name: first.full_name || "",
+            customerRef: first.customer_ref || "",
+            phone: first.masked_phone || first.phone || "",
+            accountType: `${first.account_type || ""} account`,
+            language: first.preferred_language || "",
+            campaign: "Voice Studio session",
+          });
+        }
+      })
+      .catch((e: unknown) => setCustomersError(e instanceof Error ? e.message : "Customers could not be loaded."));
+  }, []);
 
   function playVoiceSample(sampleUrl: string, voiceId: string) {
     if (playingVoice === voiceId) {
@@ -177,8 +204,7 @@ export function TestConsolePage() {
     try {
       if (sampleAudioRef.current) sampleAudioRef.current.pause();
       setPlayingVoice(null);
-      await kuralApi.resetDemo();
-      setResetNotice("Demo data reset successfully (database cleared).");
+      setResetNotice("Started a fresh session. No stored data was deleted.");
       window.setTimeout(() => setResetNotice(null), 4000);
       await startNewSession();
     } catch (e) {
@@ -194,41 +220,57 @@ export function TestConsolePage() {
   }
 
   function sendClientTiming(name: string) {
-    const elapsed = performance.now() - callStartedAtRef.current;
+    const elapsed = Math.round(performance.now() - callStartedAtRef.current);
     recordTiming(name, elapsed);
     voiceConnectionRef.current?.sendTiming(name, elapsed);
   }
 
-  function stopPlayback() {
-    for (const source of playingSourcesRef.current) {
-      try {
-        source.stop();
-      } catch {
-        /* already stopped */
-      }
-      source.disconnect();
-    }
-    playingSourcesRef.current.clear();
-    nextAudioTimeRef.current = audioContextRef.current?.currentTime ?? 0;
-  }
-
   function stopMicrophone() {
-    captureNodeRef.current?.port.close();
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    analyserRef.current?.disconnect();
+    analyserRef.current = null;
+    setAudioEnergy(0);
+    setAudioDb(-60);
     captureNodeRef.current?.disconnect();
     captureNodeRef.current = null;
     micStreamRef.current?.getTracks().forEach((track) => track.stop());
     micStreamRef.current = null;
   }
 
+  function stopPlayback() {
+    playingSourcesRef.current.forEach((src) => {
+      try {
+        src.stop();
+        src.disconnect();
+      } catch {
+        /* already stopped */
+      }
+    });
+    playingSourcesRef.current.clear();
+    nextAudioTimeRef.current = 0;
+    pcmCarryRef.current = new Uint8Array();
+    captureNodeRef.current?.port.postMessage({ isSpeaking: false });
+    voiceConnectionRef.current?.sendPlaybackStatus("idle");
+  }
+
   function toggleMute() {
-    if (micStreamRef.current) {
-      const audioTracks = micStreamRef.current.getAudioTracks();
-      audioTracks.forEach((track) => {
-        track.enabled = isMuted;
-      });
-      setIsMuted(!isMuted);
+    if (!captureNodeRef.current) return;
+    const next = !isMuted;
+    setIsMuted(next);
+    captureNodeRef.current.port.postMessage({ isMuted: next });
+  }
+
+  function handleInterrupt() {
+    if (connected && voiceConnectionRef.current) {
+      stopPlayback();
+      setVoiceState("INTERRUPTED");
+      voiceConnectionRef.current.sendPlaybackStatus("idle");
     }
   }
+
 
   async function finalizeCallEnding() {
     if (intentionalCloseRef.current) return;
@@ -287,7 +329,11 @@ export function TestConsolePage() {
 
   function playPcmChunk(chunk: Uint8Array) {
     const context = audioContextRef.current;
-    if (!context || context.state !== "running") return;
+    if (!context) return;
+    if (context.state === "suspended") {
+      void context.resume();
+    }
+    if (context.state !== "running") return;
 
     const merged = new Uint8Array(pcmCarryRef.current.length + chunk.length);
     merged.set(pcmCarryRef.current);
@@ -311,12 +357,18 @@ export function TestConsolePage() {
     const playAt = Math.max(context.currentTime + 0.015, nextAudioTimeRef.current);
     source.start(playAt);
     nextAudioTimeRef.current = playAt + buffer.duration;
+    if (playingSourcesRef.current.size === 0) {
+      captureNodeRef.current?.port.postMessage({ isSpeaking: true });
+      voiceConnectionRef.current?.sendPlaybackStatus("playing");
+    }
     playingSourcesRef.current.add(source);
 
     source.onended = () => {
       source.disconnect();
       playingSourcesRef.current.delete(source);
       if (!playingSourcesRef.current.size) {
+        captureNodeRef.current?.port.postMessage({ isSpeaking: false });
+        voiceConnectionRef.current?.sendPlaybackStatus("idle");
         if (callEndingPendingRef.current && allTtsChunksReceivedRef.current) {
           if (endingFinalizeTimerRef.current) {
             window.clearTimeout(endingFinalizeTimerRef.current);
@@ -347,7 +399,6 @@ export function TestConsolePage() {
         setConnected(true);
         setOnline(true);
         setError(null);
-        setReachedStates((prev) => Array.from(new Set([...prev, "Connected", "Identity Check"])));
         break;
 
       case "assistant_message": {
@@ -356,9 +407,6 @@ export function TestConsolePage() {
         setMessages((current) => [...current, { id: `${now}-ava`, speaker: "AVA", text, time: formatTime() }]);
         const stateStr = String(message.state ?? "");
         setKuralState(stateStr);
-        if (stateStr) {
-          setReachedStates((prev) => Array.from(new Set([...prev, stateStr])));
-        }
         setIntent(String(message.intent ?? ""));
         setPolicy((message.policy_decision as PolicyDecision | undefined) ?? null);
         setCaseId((message.case_id as string | null | undefined) ?? null);
@@ -375,7 +423,6 @@ export function TestConsolePage() {
         if (message.ended) {
           callEndingPendingRef.current = true;
           allTtsChunksReceivedRef.current = false;
-          setReachedStates((prev) => Array.from(new Set([...prev, "Ended"])));
         }
         break;
       }
@@ -466,15 +513,39 @@ export function TestConsolePage() {
         break;
       }
 
+      case "audio_diagnostics": {
+        setServerFramesCount(Number(message.mic_frames ?? 0));
+        break;
+      }
+
       case "tts_error":
       case "voice_error":
+        captureNodeRef.current?.port.postMessage({ isSpeaking: false });
+        voiceConnectionRef.current?.sendPlaybackStatus("idle");
         setError(String(message.detail ?? "Voice service encountered an issue. Typed responses remain active."));
+        setVoiceErrorRecoverable(Boolean(message.recoverable));
         if (message.fatal) {
           void closeCall(false);
         }
         break;
 
-      case "call_ended":
+      case "silence_state": {
+        const stateStr = String(message.state ?? "");
+        if (stateStr === "REMINDER") {
+          setVoiceState("SILENCE_REMINDER");
+        } else if (stateStr === "TERMINATING") {
+          setVoiceState("TERMINATING");
+        } else if (stateStr === "WAITING" && !callEndingPendingRef.current) {
+          setVoiceState("LISTENING");
+        }
+        break;
+      }
+
+      case "call_ended": {
+        const reason = String(message.reason ?? "");
+        if (reason === "no_response") {
+          setIntent("NO_RESPONSE");
+        }
         callEndingPendingRef.current = true;
         allTtsChunksReceivedRef.current = true;
         stopMicrophone();
@@ -487,6 +558,7 @@ export function TestConsolePage() {
           }, 600);
         }
         break;
+      }
 
       default:
         break;
@@ -502,10 +574,17 @@ export function TestConsolePage() {
       window.clearTimeout(endingFinalizeTimerRef.current);
       endingFinalizeTimerRef.current = null;
     }
+    if (voiceConnectionRef.current) {
+      voiceConnectionRef.current.close();
+      voiceConnectionRef.current = null;
+    }
+    stopMicrophone();
+    stopPlayback();
     intentionalCloseRef.current = false;
     callEndingPendingRef.current = false;
     allTtsChunksReceivedRef.current = false;
-    const session = await kuralApi.createSession();
+
+    const session = await kuralApi.createSession(customerInfo.customerRef);
     setSessionId(session.session_id);
     setKuralState(session.state);
     setIntent("");
@@ -514,19 +593,34 @@ export function TestConsolePage() {
     setCallbackRequested(false);
     setMessages([]);
     setError(null);
+    setVoiceErrorRecoverable(false);
+    setMicFramesTransmitted(0);
+    setServerFramesCount(0);
+    micFramesCountRef.current = 0;
     setPartialText("");
     setTimings({});
     timingsRef.current = {};
     setCallEnded(false);
+    setConnected(false);
     setCallDuration(0);
     setFinalDuration(0);
     setVoiceState("READY");
-    setReachedStates(["Connected", "Disclosure"]);
+    return session.session_id;
   }
 
   async function answerCall() {
-    if (!sessionId || connected) return;
+    if (connected) return;
+    let targetSessionId = sessionId;
+    if (!targetSessionId || callEnded) {
+      targetSessionId = await startNewSession();
+    }
+    if (!targetSessionId) return;
+
     setError(null);
+    setVoiceErrorRecoverable(false);
+    setMicFramesTransmitted(0);
+    setServerFramesCount(0);
+    micFramesCountRef.current = 0;
     setVoiceState("PROCESSING");
     setCallEnded(false);
     setTimings({});
@@ -549,7 +643,7 @@ export function TestConsolePage() {
         context = new AudioContext();
       }
       audioContextRef.current = context;
-      await context.resume(); // Unlocks playback in the user click gesture
+      await context.resume();
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -563,7 +657,7 @@ export function TestConsolePage() {
       micStreamRef.current = stream;
 
       const connection = await kuralApi.connectRealtimeVoice(
-        sessionId,
+        targetSessionId,
         {
           onMessage: handleVoiceMessage,
           onAudioChunk: playPcmChunk,
@@ -586,7 +680,46 @@ export function TestConsolePage() {
       voiceConnectionRef.current = connection;
 
       await context.audioWorklet.addModule("/pcm-capture-worklet.js");
+      // The server may have ended the call (e.g. speech provider unavailable) while we awaited;
+      // keep its truthful error instead of reporting a secondary audio-setup failure.
+      if (context.state === "closed" || audioContextRef.current !== context) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
       const source = context.createMediaStreamSource(stream);
+
+      // Real-time Web Audio AnalyserNode for true dB / energy meter
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.3;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+
+      const pcmData = new Uint8Array(analyser.frequencyBinCount);
+      const monitorEnergy = () => {
+        if (!micStreamRef.current) return;
+        analyser.getByteFrequencyData(pcmData);
+        let sum = 0;
+        for (let i = 0; i < pcmData.length; i++) {
+          sum += pcmData[i];
+        }
+        const avg = sum / pcmData.length;
+        const energy = Math.min(100, Math.round((avg / 128) * 100));
+        const db = avg > 0 ? Math.max(-60, Math.round(20 * Math.log10(avg / 255))) : -60;
+        setAudioEnergy(energy);
+        setAudioDb(db);
+
+        // Natural client-side barge-in: If user speaks (>20% energy) while Subbu is actively playing audio
+        if (energy > 20 && playingSourcesRef.current.size > 0) {
+          stopPlayback();
+          voiceConnectionRef.current?.sendPlaybackStatus("idle");
+          setVoiceState("LISTENING");
+        }
+
+        animFrameRef.current = requestAnimationFrame(monitorEnergy);
+      };
+      animFrameRef.current = requestAnimationFrame(monitorEnergy);
+
       const worklet = new AudioWorkletNode(context, "kural-pcm-capture", {
         numberOfInputs: 1,
         numberOfOutputs: 1,
@@ -598,6 +731,10 @@ export function TestConsolePage() {
 
       worklet.port.onmessage = (event: MessageEvent<ArrayBuffer>) => {
         connection.sendAudio(event.data);
+        micFramesCountRef.current += 1;
+        if (micFramesCountRef.current % 25 === 0) {
+          setMicFramesTransmitted(micFramesCountRef.current);
+        }
       };
 
       source.connect(worklet);
@@ -618,7 +755,7 @@ export function TestConsolePage() {
       const denied = cause instanceof DOMException && cause.name === "NotAllowedError";
       setError(
         denied
-          ? "Microphone access was denied. Please allow microphone permission to talk with AVA."
+          ? "Microphone access was denied. Please allow microphone permission to talk with Subbu."
           : cause instanceof Error
           ? cause.message
           : "Could not initialize voice call. Check connection.",
@@ -717,642 +854,150 @@ export function TestConsolePage() {
     Boolean(navigator.mediaDevices?.getUserMedia) &&
     typeof AudioWorkletNode !== "undefined";
 
+  const statusLabel = connected
+    ? voiceState === "SPEAKING"
+      ? "SUBBU SPEAKING"
+      : voiceState === "SILENCE_REMINDER"
+      ? "SILENCE REMINDER"
+      : voiceState === "TERMINATING"
+      ? "ENDING (NO RESPONSE)"
+      : voiceState === "LISTENING"
+      ? "LISTENING TO YOU"
+      : voiceState === "PROCESSING"
+      ? "EVALUATING"
+      : voiceState === "INTERRUPTED"
+      ? "INTERRUPTED"
+      : "CONNECTED"
+    : callEnded
+    ? intent === "NO_RESPONSE" ? "ENDED (NO RESPONSE)" : "CALL ENDED"
+    : "READY";
+
+  const live = connected && !callEnded;
+  const stateMeta: Record<VoiceState, { label: string; hint: string; tone: string }> = {
+    READY: { label: callEnded ? "Call ended" : "Ready to call", hint: callEnded ? `Duration ${formatDuration(finalDuration)}` : "Subbu will open with the bank's approved disclosure", tone: "" },
+    LISTENING: { label: isMuted ? "Microphone muted" : "Listening", hint: isMuted ? "Unmute to let the customer speak" : "Speak naturally — you can interrupt Subbu at any time", tone: isMuted ? "warn" : "live" },
+    PROCESSING: { label: "Thinking", hint: "KURAL is checking policy and choosing an approved reply", tone: "live" },
+    SPEAKING: { label: "Subbu is speaking", hint: "Start talking to interrupt", tone: "live" },
+    INTERRUPTED: { label: "Interrupted", hint: "Listening to the customer", tone: "live" },
+    SILENCE_REMINDER: { label: "Checking in", hint: "No response heard — Subbu is prompting the customer", tone: "warn" },
+    TERMINATING: { label: "Ending call", hint: "Closing politely", tone: "warn" },
+    ENDED: { label: "Call ended", hint: `Duration ${formatDuration(finalDuration)}`, tone: "" },
+  };
+  const meta = error && !live ? { label: "Call could not start", hint: "See the message below", tone: "bad" } : stateMeta[voiceState];
+  const level = Math.min(1, audioEnergy * 4);
+  const orbClass = voiceState === "SPEAKING" ? "speaking" : live ? "" : "idle";
+  const lat = telemetryHistory.map((t) => t.stages.total_turn_response_ms).filter((n) => n > 0);
+  const pct = calculatePercentiles(lat);
+  void TIMING_LABELS; void statusLabel; void playingVoice; void playVoiceSample; void secondaryQuestion; void timings; void resetNotice; void handleResetDemo;
+
   return (
-    <div className="voice-agent-root">
-      <div className="voice-agent-container">
-        {/* Top bar */}
-        <header className="voice-topbar">
-          <div className="voice-brand-pill">
-            <div className="voice-brand-logo">TB</div>
-            <div className="voice-brand-title">
-              <strong>KURAL · Subbu</strong>
-              <span>Town Bank Voice Operations · Outbound Telephony Engine</span>
-            </div>
-          </div>
-
-          <div className="voice-topbar-controls">
-            <button
-              className="reset-demo-btn"
-              onClick={() => void handleResetDemo()}
-              title="Reset all telephony cases and callbacks"
-            >
-              <ArrowCounterClockwise size={13} /> Reset Telephony Cache
-            </button>
-
-            <span style={{ fontSize: "11px", color: online ? "#34d399" : "#f87171", fontWeight: 600 }}>
-              {online ? "● Backend Connected" : "● Offline"}
-            </span>
-
-            <div className={`voice-call-status-badge ${connected ? "is-live" : callEnded ? "is-ended" : ""}`}>
-              {connected && <span className="live-pulse-dot" />}
-              <span>{connected ? "LIVE CALL" : callEnded ? "CALL ENDED" : "READY TO CONNECT"}</span>
-            </div>
-
-            {connected && <div className="voice-timer">{formatDuration(callDuration)}</div>}
-
-            <button
-              className="developer-toggle"
-              style={{ padding: "6px 12px", fontSize: "11px" }}
-              onClick={() => setShowTimings((v) => !v)}
-              aria-expanded={showTimings}
-            >
-              <Waveform size={14} /> {showTimings ? "Hide Latency" : "Latency Timings"}
-            </button>
-          </div>
-        </header>
-
-        {/* Global Reset Notification */}
-        {resetNotice && (
-          <div style={{ background: "rgba(16, 185, 129, 0.2)", border: "1px solid #10b981", color: "#a7f3d0", padding: "10px 16px", borderRadius: 12, margin: "10px 0", fontSize: "12px", display: "flex", alignItems: "center", gap: "8px" }}>
-            <CheckCircle size={16} weight="fill" />
-            <span>{resetNotice}</span>
-          </div>
-        )}
-
-        {/* Global Error Banner */}
-        {error && (
-          <div className="error-banner" role="alert" style={{ margin: 0, borderRadius: 12 }}>
-            <strong>Voice Notification:</strong> {error}
-          </div>
-        )}
-
-        {/* Latency Timings Drawer */}
-        {showTimings && (
-          <div className="latency-panel">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: "12px", fontWeight: 700, color: "#38bdf8" }}>
-                Voice Pipeline Telemetry (Measured Latencies)
-              </span>
-              <span style={{ fontSize: "10px", color: "#94a3b8" }}>Realtime STT (Saaras) · Gemini · Bulbul v3 TTS</span>
-            </div>
-            <div className="latency-grid">
-              {Object.entries(TIMING_LABELS).map(([key, label]) => (
-                <div key={key} className="latency-metric">
-                  <span>{label}</span>
-                  <strong>{timings[key] === undefined ? "—" : `${Math.round(timings[key])} ms`}</strong>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* ------------------------------------------------------------------
-            STATE 1: INCOMING CALL SCREEN (Before Answering)
-            ------------------------------------------------------------------ */}
-        {!connected && !callEnded && (
-          <section className="incoming-call-hero">
-            <div className="incoming-eyebrow">Outbound Telephony Gateway · Ready to Connect</div>
-
-            {/* Recipient Profile Card */}
-            <div className="precall-recipient-card">
-              <div className="recipient-avatar">
-                <UserCircle size={32} weight="fill" />
-              </div>
-              <div className="recipient-info">
-                <strong>Rahul Sharma · Customer TB-88219</strong>
-                <span>Masked Line: +91 98765 ••••• · Premium Savings Account</span>
-              </div>
-              <div className="recipient-meta-tags">
-                <span className="recipient-badge">
-                  <ShieldCheck size={13} /> RBI Consent Verified
-                </span>
-                <span style={{ fontSize: "11.5px", color: "#94a3b8" }}>
-                  Campaign: App v2.4 Upgrade
-                </span>
-              </div>
-            </div>
-
-            <div className="hero-orb-wrapper">
-              <div className="hero-orb-ring-outer" />
-              <div className="hero-orb-ring-inner" />
-              <div className="hero-orb-core">S</div>
-            </div>
-
-            <h1>Subbu · Outbound Relationship Officer</h1>
-            <p>
-              Town Bank automated voice assistant calling customer Rahul regarding mobile app update.
-            </p>
-
-            <button
-              className="answer-call-btn"
-              disabled={!sessionId || !canUseMic || voiceState === "PROCESSING"}
-              onClick={() => void answerCall()}
-            >
-              <Phone size={22} weight="fill" />
-              {voiceState === "PROCESSING" ? "INITIALIZING TELEPHONY…" : "START OUTBOUND CALL"}
-            </button>
-
-            {!canUseMic && (
-              <p style={{ color: "#ef4444", fontSize: "12px", marginTop: "16px" }}>
-                This browser environment does not support audio worklet microphone capture.
-              </p>
-            )}
-
-            {/* Recorded Voice Samples Studio */}
-            <div className="sample-voice-studio" style={{ marginTop: "24px", maxWidth: "680px" }}>
-              <div className="demo-scenarios-title" style={{ color: "#38bdf8" }}>
-                <Waveform size={15} /> Recorded Voice Call Samples (Two Distinct Voices)
-              </div>
-              <div className="sample-voice-grid">
-                <div className="sample-voice-card">
-                  <div className="sample-voice-info">
-                    <strong>Subbu (Male · Aditya)</strong>
-                    <small>Town Bank Outbound AI Voice Assistant</small>
-                  </div>
-                  <button
-                    className={`sample-voice-play-btn ${playingVoice === "subbu" ? "is-playing" : ""}`}
-                    onClick={() => playVoiceSample("/samples/voice_subbu_male.wav", "subbu")}
-                  >
-                    {playingVoice === "subbu" ? "⏹ Stop Sample" : "▶ Play Subbu"}
-                  </button>
-                </div>
-                <div className="sample-voice-card">
-                  <div className="sample-voice-info">
-                    <strong>Priya (Female · Priya)</strong>
-                    <small>Town Bank Support Specialist</small>
-                  </div>
-                  <button
-                    className={`sample-voice-play-btn ${playingVoice === "priya" ? "is-playing" : ""}`}
-                    onClick={() => playVoiceSample("/samples/voice_priya_female.wav", "priya")}
-                  >
-                    {playingVoice === "priya" ? "⏹ Stop Sample" : "▶ Play Priya"}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Quick Demo Scenarios with Spec Section 20 sequence */}
-            <div style={{ marginTop: "24px", width: "100%", maxWidth: "680px" }}>
-              <div className="demo-scenarios-section">
-                <div className="demo-scenarios-title">
-                  <Sparkle size={14} /> Master Operational Walkthrough (Spec §20)
-                </div>
-                <div className="demo-scenarios-pills" style={{ marginBottom: "16px" }}>
-                  {MASTER_DEMO_STEPS.map((sc) => (
-                    <button
-                      key={sc.id}
-                      className="scenario-pill"
-                      onClick={() => handleTriggerScenario(sc)}
-                    >
-                      <span style={{ color: "#38bdf8", fontWeight: 700 }}>{sc.badge}:</span> {sc.text}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="demo-scenarios-title">
-                  <ShieldCheck size={14} /> Golden Scenarios & Edge Cases
-                </div>
-                <div className="demo-scenarios-pills">
-                  {GOLDEN_SCENARIOS.map((sc) => (
-                    <button
-                      key={sc.id}
-                      className="scenario-pill"
-                      onClick={() => handleTriggerScenario(sc)}
-                    >
-                      <span style={{ color: "#2dd4bf", fontWeight: 700 }}>{sc.badge}:</span> {sc.text}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* ------------------------------------------------------------------
-            STATE 2: ACTIVE LIVE CALL SCREEN (When Connected)
-            ------------------------------------------------------------------ */}
-        {connected && (
-          <section className="active-call-grid">
-            <div className="active-call-main">
-              {/* Central Dynamic Interactive Orb */}
-              <div className={`voice-orb-stage voice-state-${voiceState.toLowerCase()}`}>
-                <div className="active-orb-box">
-                  <div className="active-orb-halo" />
-                  <div className="active-orb">S</div>
-                </div>
-
-                {/* Animated Equalizer Waveform */}
-                <div className="waveform-container">
-                  <div className="waveform-bar" />
-                  <div className="waveform-bar" />
-                  <div className="waveform-bar" />
-                  <div className="waveform-bar" />
-                  <div className="waveform-bar" />
-                  <div className="waveform-bar" />
-                  <div className="waveform-bar" />
-                </div>
-
-                {/* Dynamic Status Caption */}
-                <div className="active-state-caption">
-                  {voiceState === "SPEAKING" ? (
-                    <>
-                      <span style={{ color: "#38bdf8" }}>SUBBU IS SPEAKING</span>
-                      <small style={{ color: "#64748b" }}>· (Start speaking to interrupt)</small>
-                    </>
-                  ) : voiceState === "LISTENING" ? (
-                    <>
-                      <span style={{ color: "#34d399" }}>LISTENING TO YOU</span>
-                      <small style={{ color: "#64748b" }}>· (Microphone active)</small>
-                    </>
-                  ) : voiceState === "PROCESSING" ? (
-                    <>
-                      <span style={{ color: "#a78bfa" }}>THINKING & PROCESSING</span>
-                      <small style={{ color: "#64748b" }}>· KURAL evaluating</small>
-                    </>
-                  ) : voiceState === "INTERRUPTED" ? (
-                    <>
-                      <span style={{ color: "#fbbf24" }}>INTERRUPTED</span>
-                      <small style={{ color: "#64748b" }}>· Switched to listening</small>
-                    </>
-                  ) : (
-                    "CONNECTED"
-                  )}
-                </div>
-
-                <div className="barge-in-hint">
-                  Continuous live audio — speaks naturally without pressing stop.
-                </div>
-
-                {/* Call Control Buttons */}
-                <div className="call-action-row">
-                  <button
-                    className="developer-toggle"
-                    style={{ background: isMuted ? "#f87171" : "#1e293b", color: "#fff" }}
-                    onClick={toggleMute}
-                    title={isMuted ? "Unmute Mic" : "Mute Mic"}
-                  >
-                    {isMuted ? <MicrophoneSlash size={18} /> : <Microphone size={18} />}
-                    {isMuted ? "Unmute" : "Mute"}
-                  </button>
-
-                  <button className="end-call-btn" onClick={() => void closeCall(true)}>
-                    <PhoneDisconnect size={20} weight="fill" />
-                    END CALL
-                  </button>
-                </div>
-              </div>
-
-              {/* Live Transcript Stream */}
-              <div className="transcript-card">
-                <div className="transcript-header">
-                  <h2>Live Conversation</h2>
-                  <span style={{ fontSize: "11px", color: "#94a3b8" }}>
-                    Turn #{messages.length}
-                  </span>
-                </div>
-
-                <div className="transcript-scroll">
-                  {messages.map((m) => (
-                    <div
-                      key={m.id}
-                      className={`message-bubble ${m.speaker === "AVA" || m.speaker === "Subbu" ? "is-ava" : "is-customer"}`}
-                    >
-                      <div className="message-bubble-header">
-                        <span>{m.speaker === "AVA" || m.speaker === "Subbu" ? "Subbu (Town Bank Assistant)" : "CUSTOMER (You)"}</span>
-                        <span>{m.time}</span>
-                      </div>
-                      <div>{m.text}</div>
-                    </div>
-                  ))}
-
-                  {partialText && (
-                    <div className="partial-live-bubble">
-                      <Waveform size={15} style={{ animation: "wave-bar 0.7s infinite alternate" }} />
-                      <span>{partialText}</span>
-                    </div>
-                  )}
-
-                  {!messages.length && !partialText && (
-                    <div style={{ color: "#64748b", fontSize: "12px", textAlign: "center", padding: "20px" }}>
-                      Subbu is initiating the opening disclosure…
-                    </div>
-                  )}
-                </div>
-
-
-
-                {/* In-Call Typed Fallback Composer */}
-                <div className="in-call-composer">
-                  <input
-                    placeholder="Speak or type a message into the call…"
-                    value={composerText}
-                    onChange={(e) => setComposerText(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleSendText();
-                    }}
-                  />
-                  <button
-                    className="in-call-send-btn"
-                    disabled={!composerText.trim()}
-                    onClick={handleSendText}
-                  >
-                    <PaperPlaneRight size={16} weight="fill" />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Right Sidebar: KURAL Decision & Policy Engine */}
-            <aside className="kural-sidebar">
-              <div className="kural-panel-card">
-                <h3>
-                  <span>KURAL Decision Layer</span>
-                  <button
-                    className="developer-toggle"
-                    style={{ padding: "4px 8px", fontSize: "10px" }}
-                    onClick={() => setShowDebug(!showDebug)}
-                  >
-                    {showDebug ? "Hide" : "Show"}
-                  </button>
-                </h3>
-
-                {showDebug && (
-                  <div>
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">CURRENT FSM STATE</span>
-                      <strong className="kural-metric-val">{kuralState || "DISCLOSURE"}</strong>
-                    </div>
-
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">CLASSIFIED INTENT</span>
-                      <strong className="kural-metric-val" style={{ color: "#38bdf8" }}>
-                        {intent || "Awaiting Utterance"}
-                      </strong>
-                    </div>
-
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">POLICY DECISION</span>
-                      <span
-                        className={`kural-pill-tag ${
-                          policy === "BLOCKED" ? "kural-pill-blocked" : "kural-pill-allowed"
-                        }`}
-                      >
-                        {policy || "ALLOWED"}
-                      </span>
-                    </div>
-
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">SECURITY SHIELD</span>
-                      <span className="kural-pill-tag kural-pill-allowed">
-                        <Lock size={11} style={{ marginRight: "3px" }} /> RBI OTP GUARD
-                      </span>
-                    </div>
-
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">CUSTOMER SENTIMENT</span>
-                      <strong className="kural-metric-val" style={{ color: "#34d399" }}>
-                        +0.85 (RECEPTIVE)
-                      </strong>
-                    </div>
-
-                    {/* Active LLM Provider & Architecture */}
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">NLU PROVIDER / MODEL</span>
-                      <strong className="kural-metric-val" style={{ color: "#38bdf8", fontSize: "12px" }}>
-                        {turnTelemetry ? `${turnTelemetry.provider} · ${turnTelemetry.model}` : "Configured LLM Layer"}
-                      </strong>
-                    </div>
-
-                    {/* Fallback & Detour Badges */}
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">INFERENCE MODE</span>
-                      <span
-                        className={`kural-pill-tag ${
-                          fallbackUsed ? "kural-pill-blocked" : "kural-pill-allowed"
-                        }`}
-                      >
-                        {fallbackUsed ? "⚡ Local Fallback (<2ms)" : "🤖 Live LLM NLU"}
-                      </span>
-                    </div>
-
-                    {secondaryQuestion && (
-                      <div className="kural-metric-row">
-                        <span className="kural-metric-label">SIDE-QUESTION DETOUR</span>
-                        <span className="kural-pill-tag kural-pill-action">
-                          {secondaryQuestion}
-                        </span>
-                      </div>
-                    )}
-
-                    {/* Measured T0->T7 Pipeline Telemetry */}
-                    <div className="kural-metric-row">
-                      <span className="kural-metric-label">TURN LATENCY (T0→T7)</span>
-                      <strong
-                        className="kural-metric-val"
-                        style={{
-                          color: !turnTelemetry
-                            ? "#94a3b8"
-                            : turnTelemetry.stages.total_turn_response_ms < 2000
-                            ? "#34d399"
-                            : "#f59e0b",
-                        }}
-                      >
-                        {turnTelemetry ? `${turnTelemetry.stages.total_turn_response_ms}ms` : "Awaiting Turn"}
-                      </strong>
-                    </div>
-
-                    {turnTelemetry && (
-                      <div style={{ background: "#0f172a", borderRadius: "6px", padding: "8px", marginTop: "8px", fontSize: "11px", border: "1px solid #1e293b" }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px" }}>
-                          <span style={{ color: "#64748b" }}>STT Final (T1-T2):</span>
-                          <span style={{ color: "#e2e8f0" }}>{turnTelemetry.stages.stt_ms}ms</span>
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px" }}>
-                          <span style={{ color: "#64748b" }}>LLM Inference (T3-T4):</span>
-                          <span style={{ color: "#e2e8f0" }}>{turnTelemetry.stages.llm_ms}ms</span>
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px" }}>
-                          <span style={{ color: "#64748b" }}>KURAL Policy (T4-T5):</span>
-                          <span style={{ color: "#e2e8f0" }}>{turnTelemetry.stages.kural_ms}ms</span>
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "3px" }}>
-                          <span style={{ color: "#64748b" }}>TTS First Chunk (T6-T7):</span>
-                          <span style={{ color: "#e2e8f0" }}>{turnTelemetry.stages.tts_first_chunk_ms}ms</span>
-                        </div>
-                        {timings.browser_playback_started && (
-                          <div style={{ display: "flex", justifyContent: "space-between", marginTop: "4px", paddingTop: "4px", borderTop: "1px solid #1e293b" }}>
-                            <span style={{ color: "#38bdf8" }}>Browser Playback (T8):</span>
-                            <span style={{ color: "#38bdf8", fontWeight: 600 }}>{Math.round(timings.browser_playback_started)}ms</span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {telemetryHistory.length > 0 && (() => {
-                      const latencies = telemetryHistory.map((t) => t.stages.total_turn_response_ms);
-                      const stats = calculatePercentiles(latencies);
-                      return (
-                        <div style={{ marginTop: "10px", fontSize: "11px", color: "#64748b", display: "flex", justifyContent: "space-between", background: "#0b1120", padding: "6px 8px", borderRadius: "4px", border: "1px solid #1e293b" }}>
-                          <span>Turns: <strong style={{ color: "#cbd5e1" }}>{latencies.length}</strong></span>
-                          <span>P50: <strong style={{ color: "#34d399" }}>{Math.round(stats.p50)}ms</strong></span>
-                          <span>P95: <strong style={{ color: "#38bdf8" }}>{Math.round(stats.p95)}ms</strong></span>
-                          <span>P99: <strong style={{ color: "#f59e0b" }}>{Math.round(stats.p99)}ms</strong></span>
-                        </div>
-                      );
-                    })()}
-
-                    <div className="kural-metric-row" style={{ marginTop: "10px" }}>
-                      <span className="kural-metric-label">AUTHORIZED ACTION</span>
-                      <span className="kural-pill-tag kural-pill-action">
-                        {callbackRequested
-                          ? "REQUEST_CALLBACK"
-                          : caseId
-                          ? "CREATE_APP_UPDATE_CASE"
-                          : "NO_OP"}
-                      </span>
-                    </div>
-
-                    <div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "12px", lineHeight: 1.5 }}>
-                      Deterministic FSM enforces policy authority. The LLM understands customer intent and side questions without directly controlling transitions.
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Call Timeline */}
-              <div className="kural-panel-card">
-                <h3>Call Progression Timeline</h3>
-                <div className="call-timeline-stepper">
-                  {reachedStates.map((st, idx) => (
-                    <div
-                      key={st}
-                      className={`timeline-step ${
-                        idx === reachedStates.length - 1 ? "is-active" : "is-past"
-                      }`}
-                    >
-                      <div className="timeline-step-icon">✓</div>
-                      <span>{st}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </aside>
-          </section>
-        )}
-
-        {/* ------------------------------------------------------------------
-            STATE 3: CALL COMPLETED SUMMARY SCREEN (After Ending Call)
-            ------------------------------------------------------------------ */}
-        {callEnded && (
-          <section className="call-summary-card">
-            <div className="summary-check-icon">
-              <CheckCircle size={32} weight="fill" />
-            </div>
-
-            <h2>CALL COMPLETED</h2>
-            <p>Outbound customer service interaction has been concluded and persisted.</p>
-
-            <div className="summary-metrics-grid">
-              <div className="summary-metric-box">
-                <span>Call Duration</span>
-                <strong>{formatDuration(finalDuration || callDuration)}</strong>
-              </div>
-
-              <div className="summary-metric-box">
-                <span>Final Intent</span>
-                <strong>{intent || "Call Concluded"}</strong>
-              </div>
-
-              <div className="summary-metric-box">
-                <span>Business Outcome</span>
-                <strong>
-                  {callbackRequested
-                    ? "Callback Request Created"
-                    : caseId
-                    ? "App Update Case Created"
-                    : policy === "BLOCKED"
-                    ? "Blocked (Sensitive Data Protected)"
-                    : "Conversation Completed"}
-                </strong>
-              </div>
-
-              <div className="summary-metric-box">
-                <span>Security Status</span>
-                <strong style={{ color: "#34d399" }}>Sensitive Data Guard Active</strong>
-              </div>
-
-              {callbackRequested && (
-                <div className="summary-metric-box" style={{ gridColumn: "1 / -1" }}>
-                  <span>Callback Ticket</span>
-                  <strong style={{ color: "#38bdf8" }}>Requested · Scheduled for support team</strong>
-                </div>
-              )}
-
-              {caseId && (
-                <div className="summary-metric-box" style={{ gridColumn: "1 / -1" }}>
-                  <span>Support Case ID</span>
-                  <strong style={{ color: "#38bdf8" }}>{caseId}</strong>
-                </div>
-              )}
-            </div>
-
-            <div className="summary-actions-row">
-              <button
-                className="new-call-btn"
-                onClick={() => void startNewSession().catch((c) => setError(String(c)))}
-              >
-                <ArrowCounterClockwise size={18} />
-                NEW CALL
-              </button>
-
-              <button
-                className="view-transcript-btn"
-                onClick={() => setShowTranscriptModal(!showTranscriptModal)}
-              >
-                {showTranscriptModal ? "HIDE TRANSCRIPT" : "VIEW FULL TRANSCRIPT"}
-              </button>
-            </div>
-
-            {/* Expandable Complete Transcript View */}
-            {showTranscriptModal && (
-              <div style={{ marginTop: "28px", width: "100%", textAlign: "left" }}>
-                <h3 style={{ fontSize: "14px", color: "#f8fafc", marginBottom: "12px" }}>
-                  Complete Interaction Transcript ({messages.length} turns)
-                </h3>
-                <div
-                  className="transcript-scroll"
-                  style={{
-                    maxHeight: "350px",
-                    background: "rgba(15, 23, 42, 0.6)",
-                    padding: "16px",
-                    borderRadius: "14px",
-                    border: "1px solid rgba(255, 255, 255, 0.08)",
-                  }}
-                >
-                  {messages.map((m) => (
-                    <div
-                      key={m.id}
-                      className={`message-bubble ${m.speaker === "AVA" ? "is-ava" : "is-customer"}`}
-                    >
-                      <div className="message-bubble-header">
-                        <span>{m.speaker}</span>
-                        <span>{m.time}</span>
-                      </div>
-                      <div>{m.text}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* Global Security Badges Strip */}
-        <footer className="security-status-strip">
-          <span>
-            <ShieldCheck size={16} /> Customer Data Protected
-          </span>
-          <span>
-            <Lock size={16} /> Sensitive-Data Guard (OTP/PIN Blocked)
-          </span>
-          <span>
-            <ShieldCheck size={16} /> Approved Knowledge
-          </span>
-          <span>
-            <ShieldCheck size={16} /> Audit Trail Persisted
-          </span>
-        </footer>
+    <>
+      <div className="page-head" style={{ marginBottom: 16 }}>
+        <div><h1>Voice Studio</h1><p>Place a supervised browser call with Subbu. KURAL decides every reply; the AI only interprets speech.</p></div>
+        <div className="actions"><span className={`badge ${online ? "ok" : "bad"}`}>{online ? "API reachable" : "API unreachable"}</span></div>
       </div>
-    </div>
+      <div className="studio">
+        <section className="stage" aria-label="Call">
+          <div className="stage-top">
+            <button className="cust-chip" onClick={() => !live && setShowCustomerPicker((v) => !v)} disabled={live} aria-expanded={showCustomerPicker}>
+              <span className="avatar" style={{ background: "rgba(255,255,255,.1)", color: "#fff" }}>{(customerInfo.name || "?").slice(0, 1)}</span>
+              <span style={{ minWidth: 0 }}><b>{customerInfo.name || "Select a customer"}</b><span>{customerInfo.customerRef ? `${customerInfo.customerRef} · ${customerInfo.phone} · ${customerInfo.language}` : customersError ?? "Choose who Subbu is calling"}</span></span>
+            </button>
+            <span className={`state-pill ${meta.tone}`}><i />{live ? formatDuration(callDuration) : meta.tone === "bad" ? "Not connected" : "Idle"}</span>
+          </div>
+          {showCustomerPicker && !live && (
+            <div style={{ width: "100%", marginTop: 12, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, maxHeight: 220, overflow: "auto" }}>
+              {availableCustomers.length === 0 ? <p style={{ padding: 14, margin: 0, color: "#8ea0bd" }}>{customersError ?? "No customers registered. Add customers in Calls → Customers."}</p> :
+                availableCustomers.map((cust) => { const c = cust as Record<string, string>; return (
+                  <button key={c.customer_ref} className="cust-chip" style={{ width: "100%", border: 0, borderRadius: 0, background: c.customer_ref === customerInfo.customerRef ? "rgba(96,145,255,.18)" : "transparent" }}
+                    onClick={() => { setCustomerInfo({ name: c.full_name || "", customerRef: c.customer_ref || "", phone: c.masked_phone || c.phone || "", accountType: `${c.account_type || ""} account`, language: c.preferred_language || "", campaign: "Voice Studio session" }); setShowCustomerPicker(false); }}>
+                    <span style={{ minWidth: 0 }}><b>{c.full_name}</b><span>{c.customer_ref} · {c.masked_phone || c.phone} · {c.preferred_language}</span></span>
+                  </button>); })}
+            </div>
+          )}
+          <div className="orb-wrap">
+            <div style={{ display: "grid", justifyItems: "center" }}>
+              <div className={`orb ${orbClass}`} aria-hidden="true">
+                <span className="ring" style={{ transform: `scale(${1 + (voiceState === "SPEAKING" ? 0.06 : level * 0.18)})`, opacity: live ? 0.4 + level * 0.6 : 0.15 }} />
+                <span className="glyph">SUBBU</span>
+              </div>
+              <div className="caption" aria-live="polite"><b>{meta.label}</b><span>{meta.hint}</span></div>
+              <div className="partial" aria-live="polite">{live && partialText ? `“${partialText}”` : ""}</div>
+            </div>
+          </div>
+          {error && (
+            <div className="stage-error" role="alert"><span>{error}</span>
+              {voiceErrorRecoverable && live ? <button className="btn sm" onClick={() => { voiceConnectionRef.current?.retrySpeech(); setError(null); }}>Retry audio</button> : <button className="btn sm" onClick={() => setError(null)}>Dismiss</button>}
+            </div>
+          )}
+          <div className="controls" style={{ marginTop: 18 }}>
+            {live && <button className="ctl" onClick={toggleMute} aria-pressed={isMuted} aria-label={isMuted ? "Unmute microphone" : "Mute microphone"} title={isMuted ? "Unmute" : "Mute"} style={isMuted ? { background: "#f59e0b", color: "#111" } : undefined}>{isMuted ? <MicrophoneSlash size={22} /> : <Microphone size={22} />}</button>}
+            {live ? (
+              <button className="call-btn end" onClick={() => void closeCall(true)}><PhoneDisconnect size={20} weight="fill" /> End call</button>
+            ) : (
+              <button className="call-btn" disabled={!canUseMic || !customerInfo.customerRef || voiceState === "PROCESSING"} onClick={() => void answerCall()}
+                title={!customerInfo.customerRef ? "Select a customer first" : !canUseMic ? "This browser cannot capture microphone audio" : ""}>
+                <Phone size={20} weight="fill" /> {callEnded ? "Start new call" : "Start call"}
+              </button>
+            )}
+            {live && <button className="ctl" onClick={handleInterrupt} disabled={voiceState !== "SPEAKING"} aria-label="Interrupt Subbu" title="Interrupt Subbu"><HandPalm size={22} /></button>}
+          </div>
+          <div className="stage-foot">
+            <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span className={`mic-meter ${live && !isMuted ? "live" : ""}`} aria-label={live ? `Microphone level ${Math.round(level * 100)}%` : "Microphone idle"}>
+                {[0.2, 0.45, 0.7, 1, 0.7, 0.45, 0.2].map((w, i) => <i key={i} style={{ height: `${4 + (live && !isMuted ? level * w * 14 : 0)}px` }} />)}
+              </span>
+              {!canUseMic ? "Microphone capture unsupported" : live ? (isMuted ? "Microphone muted" : `Microphone live · ${micFramesTransmitted} frames sent`) : "Microphone off"}
+            </span>
+            <span>Never share OTPs, PINs or passwords on a call</span>
+          </div>
+        </section>
+
+        <section className="panel transcript" aria-label="Transcript">
+          <div className="panel-head"><div><h2>Transcript</h2><div className="sub">Sensitive numbers are redacted before storage</div></div>{messages.length > 0 && <span className="badge plain">{messages.length} turns</span>}</div>
+          <div className="transcript-list" aria-live="polite">
+            {messages.length === 0 ? <div className="empty"><h3>No conversation yet</h3><p>Start a call to see Subbu and the customer here in real time.</p></div> :
+              messages.map((m) => <div key={m.id} className={`msg ${m.speaker === "CUSTOMER" ? "cust" : "ava"}`}><small>{m.speaker === "CUSTOMER" ? "Customer" : "Subbu"}{m.redacted ? " · redacted" : ""}</small>{m.text}</div>)}
+          </div>
+          {(caseId || callbackRequested || policy === "BLOCKED") && (
+            <div className="outcome">
+              {caseId && <span className="badge warn">Case {caseId} raised</span>}
+              {callbackRequested && <span className="badge info">Callback recorded</span>}
+              {policy === "BLOCKED" && <span className="badge bad">Sensitive input blocked</span>}
+            </div>
+          )}
+          <div className="composer">
+            <input className="input" placeholder={live ? "Type the customer's reply (text fallback)" : "Start a call to use the text fallback"} value={composerText} disabled={!live}
+              onChange={(e) => setComposerText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && composerText.trim() && handleSendText()} aria-label="Customer reply" />
+            <button className="btn" disabled={!live || !composerText.trim()} onClick={handleSendText}>Send</button>
+          </div>
+        </section>
+      </div>
+
+      <details className="diag" open={showDiagnostics} onToggle={(e) => setShowDiagnostics((e.target as HTMLDetailsElement).open)}>
+        <summary>Diagnostics</summary>
+        <div className="stack" style={{ marginTop: 8 }}>
+          <div className="diag-grid">
+            <div className="diag-cell"><label>KURAL state</label><b>{kuralState}</b></div>
+            <div className="diag-cell"><label>Last intent</label><b>{intent || "—"}</b></div>
+            <div className="diag-cell"><label>Policy</label><b>{policy ?? "—"}</b></div>
+            <div className="diag-cell"><label>LLM fallback used</label><b>{fallbackUsed ? "Yes (rules)" : "No"}</b></div>
+            <div className="diag-cell"><label>Session</label><b className="mono">{sessionId ? sessionId.slice(0, 8) : "—"}</b></div>
+            <div className="diag-cell"><label>Mic frames / server frames</label><b>{micFramesTransmitted} / {serverFramesCount}</b></div>
+            <div className="diag-cell"><label>Input level</label><b>{audioDb.toFixed(0)} dB</b></div>
+            <div className="diag-cell"><label>Turn latency p50 / p95</label><b>{lat.length ? `${Math.round(pct.p50)} / ${Math.round(pct.p95)} ms` : "—"}</b></div>
+          </div>
+          {turnTelemetry && (
+            <div className="diag-grid">
+              {Object.entries(turnTelemetry.stages).map(([k, v]) => <div className="diag-cell" key={k}><label>{k.replace(/_/g, " ")}</label><b>{Math.round(v)} ms</b></div>)}
+            </div>
+          )}
+          <div>
+            <p className="small muted" style={{ margin: "0 0 6px" }}>Test utterances — sent as typed customer replies during a live call (QA only).</p>
+            <div className="chips">{[...MASTER_DEMO_STEPS, ...GOLDEN_SCENARIOS].map((sc) => <button key={sc.id} className="chip" disabled={!live} onClick={() => handleTriggerScenario(sc)} title={sc.text}>{sc.label}</button>)}</div>
+          </div>
+        </div>
+      </details>
+    </>
   );
 }

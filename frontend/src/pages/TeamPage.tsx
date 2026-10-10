@@ -1,54 +1,67 @@
-import { CheckCircle, Clock, Headset, Phone, UsersThree } from "@phosphor-icons/react";
-import { createColumnHelper } from "@tanstack/react-table";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { DataTable } from "../components/DataTable";
-import { KpiCard } from "../components/KpiCard";
-import { PageHeading } from "../components/PageHeading";
-import { PageState } from "../components/PageState";
-import { Panel } from "../components/Panel";
-import { StatusPill } from "../components/StatusPill";
-import { dashboardApi } from "../services/dashboardApi";
-import { formatDateTime } from "../services/selectors";
-import { useDashboard } from "../hooks/DashboardContext";
-import type { EscalationCase } from "../types";
+import { Plus, UsersThree } from "@phosphor-icons/react";
+import { useApi } from "../hooks/useApi";
+import { useAuth } from "../auth/AuthContext";
+import { apiJson } from "../services/http";
+import { Badge, Empty, ErrorNote, Kpi, Loading, Modal, PageHead, Panel, titleCase } from "../components/ui";
 
-const helper = createColumnHelper<EscalationCase>();
-const columns = [
-  helper.accessor("id", { header: "CASE", cell: (info) => <span className="ops-mono">{info.getValue()}</span> }),
-  helper.accessor("customerRef", { header: "CUSTOMER REF" }),
-  helper.accessor("category", { header: "ISSUE" }),
-  helper.accessor("priority", { header: "PRIORITY", cell: (info) => <StatusPill value={info.getValue()} /> }),
-  helper.accessor("assignedAgentId", { header: "ASSIGNED", cell: (info) => info.getValue() ?? <span className="ops-unassigned">Unassigned</span> }),
-  helper.accessor("slaDueAt", { header: "SLA DUE · IST", cell: (info) => <span className="ops-mono">{formatDateTime(info.getValue())}</span> }),
-];
+interface Agent { id: string; name: string; team: string; languages: string[]; skills: string[]; availability: string; openCases: number; overdueCases: number; dueCallbacks: number; maxOpenCases: number; handledToday: number; avgResolutionMin: number | null; slaHitPercent: number | null; maskedPhone: string | null; userId: string | null }
+const STATES = ["AVAILABLE", "BUSY", "ON_CALL", "BREAK", "OFFLINE"];
+
 export function TeamPage() {
-  const navigate = useNavigate();
-  const { snapshot, loading, error, refresh } = useDashboard();
-  const [notice, setNotice] = useState("");
-  if (!snapshot) return <PageState loading={loading} error={error} onRetry={() => void refresh()} />;
-  const active = snapshot.escalations.filter((item) => item.status !== "RESOLVED");
-  const available = snapshot.agents.filter((agent) => agent.availability === "AVAILABLE");
-  const onCall = snapshot.agents.filter((agent) => agent.availability === "ON_CALL");
-  const liveCalls = snapshot.calls.filter((call) => call.status === "IN_PROGRESS");
-  const atRisk = active.filter((item) => new Date(item.slaDueAt).getTime() < Date.now() + 60 * 60_000).slice(0, 8);
-  async function handleSupervisorCommand(callId: string, action: string) {
-    await dashboardApi.recordAudit(action, "CALL", callId, "SUPERVISOR", `Supervisor command: ${action}`);
-    setNotice(`Supervisor command "${action === "BARGE_IN" ? "Barge-in" : "Take over"}" dispatched for session ${callId}.`);
-  }
-  return <>
-    <PageHeading eyebrow="SUPERVISOR WORKSPACE" title="Team board" description="Live call pressure, agent availability and the cases closest to breaching SLA." actions={<span className="ops-refresh-label"><i />Live Telephony Feed</span>} />
-    <div className="ops-kpi-grid ops-kpi-grid-4"><KpiCard label="Live calls" value={liveCalls.length.toString()} icon={<Phone size={17} />} /><KpiCard label="Queue depth" value={active.length.toLocaleString("en-IN")} icon={<Clock size={17} />} accent="amber" /><KpiCard label="Agents available" value={available.length.toString()} icon={<UsersThree size={17} />} accent="green" /><KpiCard label="SLA at risk" value={atRisk.length.toString()} icon={<CheckCircle size={17} />} accent="red" /></div>
-    {notice && <div className="ops-notice-banner" role="status">{notice}<button onClick={() => setNotice("")}>Dismiss</button></div>}
-    <div className="ops-grid ops-grid-2-1">
-      <Panel title="SLA at risk" subtitle="Open cases due within the next hour" actions={<button className="ops-text-button" onClick={() => navigate("/escalations")}>Reassign in queue <span>{atRisk.length} at risk</span></button>}><DataTable data={atRisk} columns={columns} rowId={(item) => item.id} pageSize={8} emptyTitle="No cases nearing SLA" emptyText="The team has no immediate deadline pressure." /></Panel>
-      <Panel title="Agent availability" subtitle={`${snapshot.agents.length} active agents on roster`}>
-        <div className="ops-agent-capacity"><div><strong>{available.length}</strong><span>Available</span></div><div><strong>{onCall.length}</strong><span>On a call</span></div><div><strong>{snapshot.agents.filter((agent) => agent.availability === "BREAK").length}</strong><span>On break</span></div></div>
-        <div className="ops-agent-list">{snapshot.agents.slice(0, 8).map((agent) => <div key={agent.id} className="ops-agent-row"><span className="ops-person-avatar">{agent.name.split(" ").map((part) => part[0]).join("")}</span><span><strong>{agent.name}</strong><small>{agent.team} · {agent.languages.join(", ")}</small></span><StatusPill value={agent.availability} /></div>)}</div>
+  const { can, user } = useAuth();
+  const { data, error, loading, reload } = useApi<{ agents: Agent[] }>("/api/agents");
+  const [err, setErr] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ name: "", team: "Digital support", languages: "English, Hindi", skills: "GENERAL_SUPPORT, APP_SUPPORT", max_open_cases: 12 });
+  const agents = data?.agents ?? [];
+  const setAvail = async (id: string, availability: string) => {
+    try { await apiJson(`/api/agents/${id}/status`, { method: "PATCH", body: JSON.stringify({ availability }) }); void reload(); }
+    catch (e) { setErr(e instanceof Error ? e.message : "Update failed"); }
+  };
+  const add = async () => {
+    try {
+      await apiJson("/api/agents", { method: "POST", body: JSON.stringify({ ...form, languages: form.languages.split(",").map((s) => s.trim()), skills: form.skills.split(",").map((s) => s.trim()) }) });
+      setAdding(false); void reload();
+    } catch (e) { setErr(e instanceof Error ? e.message : "Could not add agent"); }
+  };
+  const me = agents.find((a) => a.id === user?.agent_id);
+  return (
+    <>
+      <PageHead title="Team" sub="Who is available, what they own and how close they are to capacity." actions={can("agent:manage") && <button className="btn primary" onClick={() => setAdding(true)}><Plus size={16} /> Add agent</button>} />
+      {err && <ErrorNote error={err} />}
+      {error && <ErrorNote error={error} onRetry={reload} />}
+      {me && <Panel title="My availability" sub="New cases are only auto-assigned while you are Available"><div className="seg">{STATES.map((s) => <button key={s} className={me.availability === s ? "on" : ""} onClick={() => setAvail(me.id, s)}>{titleCase(s)}</button>)}</div></Panel>}
+      {me && <div style={{ height: 16 }} />}
+      {data && <div className="kpis">
+        <Kpi label="Agents" value={agents.length} />
+        <Kpi label="Available" value={agents.filter((a) => a.availability === "AVAILABLE").length} />
+        <Kpi label="Open cases owned" value={agents.reduce((s, a) => s + a.openCases, 0)} />
+        <Kpi label="Overdue" value={agents.reduce((s, a) => s + a.overdueCases, 0)} tone={agents.some((a) => a.overdueCases) ? "alert" : undefined} />
+      </div>}
+      <Panel flush>
+        {loading ? <Loading /> : !agents.length ? <Empty icon={<UsersThree size={20} />} title="No agents registered" text="Add the people who handle escalations and callbacks. Link them to a user account to give them a personal queue." /> : (
+          <div className="table-wrap"><table className="t"><thead><tr><th>Agent</th><th>Availability</th><th>Workload</th><th>Handled today</th><th>Avg resolution</th><th>SLA met</th></tr></thead><tbody>
+            {agents.map((a) => {
+              const pct = Math.round((100 * a.openCases) / Math.max(a.maxOpenCases, 1));
+              return <tr key={a.id}>
+                <td className="primary-cell"><b>{a.name}</b><span>{a.team} · {a.languages.join(", ")}</span></td>
+                <td>{can("agent:manage") ? <select className="select" aria-label={`Availability for ${a.name}`} value={a.availability} onChange={(e) => setAvail(a.id, e.target.value)}>{STATES.map((s) => <option key={s} value={s}>{titleCase(s)}</option>)}</select> : <Badge value={a.availability} />}</td>
+                <td style={{ minWidth: 150 }}><div className="small num" style={{ marginBottom: 4 }}>{a.openCases}/{a.maxOpenCases} cases{a.dueCallbacks ? ` · ${a.dueCallbacks} callbacks due` : ""}</div><div className={`meter ${pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""}`}><i style={{ width: `${Math.min(pct, 100)}%` }} /></div></td>
+                <td className="num">{a.handledToday}</td><td className="num">{a.avgResolutionMin === null ? "—" : `${a.avgResolutionMin} min`}</td><td className="num">{a.slaHitPercent === null ? "—" : `${a.slaHitPercent}%`}</td>
+              </tr>;
+            })}
+          </tbody></table></div>
+        )}
       </Panel>
-    </div>
-    <Panel title="Live calls" subtitle="Active concurrent calls with supervisor intervention controls" actions={<span className="ops-mini-label">{liveCalls.length} active</span>}>
-      <div className="ops-live-call-grid">{liveCalls.slice(0, 8).map((call) => <article className="ops-live-call-card" key={call.id}><div className="ops-live-call-top"><StatusPill value="IN_PROGRESS" /><span className="ops-mono">{call.id}</span></div><strong>{call.customerRef} <small>{call.maskedPhone}</small></strong><span>{call.campaignName} · {call.language}</span><div className="ops-live-call-state">{call.kuralState.replaceAll("_", " ")} · {call.intent.replaceAll("_", " ")}</div><div className="ops-button-row"><button className="ops-button ops-button-secondary" onClick={() => void handleSupervisorCommand(call.id, "BARGE_IN")}><Headset size={14} />Barge in</button><button className="ops-button ops-button-secondary" onClick={() => void handleSupervisorCommand(call.id, "TAKE_OVER")}>Take over</button></div></article>)}</div>
-    </Panel>
-  </>;
+      {adding && <Modal title="Add agent" onClose={() => setAdding(false)} footer={<><button className="btn" onClick={() => setAdding(false)}>Cancel</button><button className="btn primary" disabled={!form.name.trim()} onClick={add}>Add agent</button></>}>
+        <label className="field">Name<input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
+        <label className="field">Team<input className="input" value={form.team} onChange={(e) => setForm({ ...form, team: e.target.value })} /></label>
+        <label className="field">Languages<input className="input" value={form.languages} onChange={(e) => setForm({ ...form, languages: e.target.value })} /></label>
+        <label className="field">Skills<input className="input" value={form.skills} onChange={(e) => setForm({ ...form, skills: e.target.value })} /><small>e.g. GENERAL_SUPPORT, APP_SUPPORT, SECURITY_CONCERN</small></label>
+        <label className="field">Max open cases<input className="input" type="number" min={1} max={100} value={form.max_open_cases} onChange={(e) => setForm({ ...form, max_open_cases: Number(e.target.value) })} /></label>
+        <p className="small muted" style={{ margin: 0 }}>New agents start Offline. To link a sign-in account, use the admin CLI with --agent.</p>
+      </Modal>}
+    </>
+  );
 }

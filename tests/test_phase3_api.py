@@ -31,7 +31,7 @@ def test_customer_apis(client: TestClient):
     data = resp.json()
     cust_ref = data["customer_ref"]
     assert data["full_name"] == "Anita Desai"
-    assert data["phone"] == "+919876543220"
+    assert data["phone"] == "+91 ••••• ••220"  # API never returns raw numbers
 
     # 2. Get customer
     get_resp = client.get(f"/api/customers/{cust_ref}")
@@ -58,7 +58,8 @@ Deepa Nair,9876543222,Tamil
     assert "Karan Johar" in exp_resp.text
 
 
-def test_campaign_apis(client: TestClient):
+def test_campaign_apis(client: TestClient, sandbox_dialing):
+    sandbox_dialing("9876543231", "9876543232")
     # 1. Create campaign
     create_resp = client.post("/api/campaigns", json={
         "name": "Festive Promo Q4",
@@ -74,17 +75,11 @@ def test_campaign_apis(client: TestClient):
     assert camp["name"] == "Festive Promo Q4"
     assert camp["status"] == "DRAFT"
 
-    # 2. Start campaign
-    start_resp = client.post(f"/api/campaigns/{cid}/start")
-    assert start_resp.status_code == 200
-    assert start_resp.json()["status"] == "ACTIVE"
+    # 2. Unapproved campaign cannot start (fail-closed preflight)
+    blocked = client.post(f"/api/campaigns/{cid}/start")
+    assert blocked.status_code == 409
 
-    # 3. Pause campaign
-    pause_resp = client.post(f"/api/campaigns/{cid}/pause")
-    assert pause_resp.status_code == 200
-    assert pause_resp.json()["status"] == "PAUSED"
-
-    # 4. Import contacts to campaign
+    # 3. Import contacts to campaign
     csv_contacts = """customer_ref,phone
 CUST-001,9876543231
 CUST-002,9876543232
@@ -92,6 +87,15 @@ CUST-002,9876543232
     imp_resp = client.post(f"/api/campaigns/{cid}/contacts/import", content=csv_contacts.encode("utf-8"))
     assert imp_resp.status_code == 200
     assert imp_resp.json()["added"] == 2
+
+    # 4. Approve, start, pause
+    assert client.post(f"/api/campaigns/{cid}/approve").json()["status"] == "APPROVED"
+    start_resp = client.post(f"/api/campaigns/{cid}/start")
+    assert start_resp.status_code == 200, start_resp.text
+    assert start_resp.json()["status"] == "ACTIVE"
+    pause_resp = client.post(f"/api/campaigns/{cid}/pause")
+    assert pause_resp.status_code == 200
+    assert pause_resp.json()["status"] == "PAUSED"
 
 
 def test_call_and_recording_apis(client: TestClient):
@@ -118,11 +122,9 @@ def test_call_and_recording_apis(client: TestClient):
     assert transcript_resp.status_code == 200
     assert isinstance(transcript_resp.json(), list)
 
-    # 5. Get recording WAV
+    # 5. No recording was captured, so none is served (never a fabricated file)
     rec_resp = client.get(f"/api/calls/{call_id}/recording")
-    assert rec_resp.status_code == 200
-    assert rec_resp.headers["content-type"] == "audio/wav"
-    assert len(rec_resp.content) > 44
+    assert rec_resp.status_code == 404
 
     # 6. Export calls CSV
     exp_resp = client.get("/api/calls/export")
@@ -131,6 +133,8 @@ def test_call_and_recording_apis(client: TestClient):
 
 
 def test_agent_and_assignment_apis(client: TestClient):
+    from tests.conftest import seed_test_agents
+    seed_test_agents(client.app.state.database)
     # 1. List agents and workloads
     agent_resp = client.get("/api/agents")
     assert agent_resp.status_code == 200

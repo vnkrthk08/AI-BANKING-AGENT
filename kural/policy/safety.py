@@ -73,6 +73,8 @@ def authorize(action: Action, source: State, target: State) -> bool:
     """Authorize prototype actions only in the FSM states that own them."""
     if source in {State.OPT_OUT, State.FRAUD_ESCALATION, State.HUMAN_ESCALATION, State.ENDED}:
         return False
+    if action in (Action.CREATE_HUMAN_SUPPORT_CASE, Action.REQUEST_CALLBACK) and target == State.HUMAN_ESCALATION:
+        return True
     if action == Action.NO_OP:
         return target == source or target in {
             State.IDENTITY_CHECK, State.PERMISSION, State.APP_STATUS, State.UPDATE_HELP,

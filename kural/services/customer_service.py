@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from kural.persistence.database import Database
 from kural.persistence.models import CampaignContactRow, CustomerRow
+from kural.privacy.masking import mask_phone
 
 
 def sanitize_csv_value(val: Any) -> Any:
@@ -115,6 +116,29 @@ class CustomerService:
                     )
                     .values(status="DND_EXCLUDED", next_attempt_at=None)
                 )
+            s.commit()
+            return self._serialize_customer(row)
+
+    def update_customer(self, customer_ref: str, patch: dict[str, Any]) -> dict[str, Any]:
+        """Update editable profile fields. Setting DND removes the customer from pending dial queues."""
+        with self.database.session() as s:
+            row = s.get(CustomerRow, customer_ref)
+            if row is None:
+                raise KeyError(customer_ref)
+            for field in ("full_name", "email", "preferred_language", "app_status", "app_version",
+                          "account_type", "branch", "region", "assigned_agent_id"):
+                if field in patch and patch[field] is not None:
+                    setattr(row, field, str(patch[field])[:128])
+            if "dnd_status" in patch:
+                row.dnd_status = bool(patch["dnd_status"])
+                if row.dnd_status:
+                    s.execute(
+                        update(CampaignContactRow)
+                        .where(CampaignContactRow.customer_ref == customer_ref,
+                               CampaignContactRow.status.in_(["PENDING", "QUEUED", "RETRY_SCHEDULED"]))
+                        .values(status="DND_EXCLUDED", next_attempt_at=None)
+                    )
+            row.updated_at = datetime.now(timezone.utc)
             s.commit()
             return self._serialize_customer(row)
 
@@ -241,6 +265,8 @@ class CustomerService:
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
         for c in customers:
+            # Exports carry masked numbers only; raw numbers stay inside the dialer boundary.
+            c = {**c, "phone": c.get("masked_phone", "")}
             row = {k: sanitize_csv_value(c.get(k, "")) for k in fieldnames}
             writer.writerow(row)
         return output.getvalue()
@@ -251,7 +277,7 @@ class CustomerService:
             "customer_ref": row.customer_ref,
             "full_name": row.full_name,
             "phone": row.phone,
-            "masked_phone": f"{row.phone[:6]}XX XX{row.phone[-2:]}" if len(row.phone) >= 10 else row.phone,
+            "masked_phone": mask_phone(row.phone),
             "email": row.email,
             "preferred_language": row.preferred_language,
             "app_status": row.app_status,

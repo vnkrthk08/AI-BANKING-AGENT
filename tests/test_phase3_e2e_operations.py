@@ -11,7 +11,8 @@ from kural.persistence.repository import SqlAlchemyKuralRepository
 
 
 @pytest.fixture
-def client():
+def client(sandbox_dialing):
+    sandbox_dialing("9876543290")
     db = Database("sqlite:///:memory:")
     repo = SqlAlchemyKuralRepository(db)
     app = create_app(repository=repo)
@@ -69,8 +70,9 @@ Smita Sen,9876543291,Bengali,NOT_INSTALLED,1,Kolkata East,East
     # -------------------------------------------------------------
     # 3. Campaign Activation
     # -------------------------------------------------------------
+    assert client.post(f"/api/campaigns/{camp_id}/approve").status_code == 200
     start_resp = client.post(f"/api/campaigns/{camp_id}/start")
-    assert start_resp.status_code == 200
+    assert start_resp.status_code == 200, start_resp.text
     assert start_resp.json()["status"] == "ACTIVE"
 
     # -------------------------------------------------------------
@@ -113,6 +115,8 @@ Smita Sen,9876543291,Bengali,NOT_INSTALLED,1,Kolkata East,East
     # -------------------------------------------------------------
     # 6. Human Representative Assignment
     # -------------------------------------------------------------
+    from tests.conftest import seed_test_agents
+    seed_test_agents(client.app.state.database)
     assign_resp = client.post("/api/agents/assign", json={
         "language": "Hindi",
         "category": "LOGIN_ISSUE",
@@ -172,9 +176,7 @@ Smita Sen,9876543291,Bengali,NOT_INSTALLED,1,Kolkata East,East
 
     # Audio recording check
     rec_resp = client.get(f"/api/calls/{call_id}/recording")
-    assert rec_resp.status_code == 200
-    assert rec_resp.headers["content-type"] == "audio/wav"
-    assert len(rec_resp.content) > 44
+    assert rec_resp.status_code == 404  # text session: no audio captured, none fabricated
 
     # -------------------------------------------------------------
     # 9. Dashboard Operational Snapshot Verification

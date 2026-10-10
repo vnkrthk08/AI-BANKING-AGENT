@@ -1,21 +1,17 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
+import { useAuth } from "../auth/AuthContext";
 import type { Role } from "../types";
 
-const KEY = "kural-ops-demo-role";
-type RoleContextValue = [Role, (role: Role) => void];
-const RoleContext = createContext<RoleContextValue | null>(null);
-
-export function RoleProvider({ children }: { children: ReactNode }) {
-  const [role, setRoleState] = useState<Role>(() => {
-    const saved = localStorage.getItem(KEY);
-    return saved === "SUPERVISOR" || saved === "AGENT" || saved === "COMPLIANCE" ? saved : "OPS_MANAGER";
-  });
-  const value = useMemo<RoleContextValue>(() => [role, (next) => { localStorage.setItem(KEY, next); setRoleState(next); }], [role]);
-  return <RoleContext.Provider value={value}>{children}</RoleContext.Provider>;
+/** The role always comes from the authenticated session; it cannot be switched in the browser. */
+export function toUiRole(backendRole: string | undefined): Role {
+  if (backendRole === "COMPLIANCE_OFFICER" || backendRole === "AUDITOR") return "COMPLIANCE";
+  if (backendRole === "OPS_MANAGER" || backendRole === "SUPERVISOR" || backendRole === "AGENT" || backendRole === "SYSTEM_ADMIN") return backendRole;
+  return "AGENT";
 }
 
-export function useRole(): RoleContextValue {
-  const context = useContext(RoleContext);
-  if (!context) throw new Error("useRole must be used inside RoleProvider");
-  return context;
+export function RoleProvider({ children }: { children: ReactNode }) { return <>{children}</>; }
+
+export function useRole(): [Role, (role: Role) => void] {
+  const { user } = useAuth();
+  return [toUiRole(user?.role), () => undefined];
 }

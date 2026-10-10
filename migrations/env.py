@@ -8,10 +8,13 @@ from sqlalchemy import engine_from_config, pool
 from kural.persistence.models import Base
 
 config = context.config
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 load_dotenv()
-database_url = os.environ.get("DATABASE_URL", config.get_main_option("sqlalchemy.url"))
+# A URL set programmatically on the Config wins; otherwise DATABASE_URL; otherwise alembic.ini.
+_configured = config.get_main_option("sqlalchemy.url")
+_explicit = _configured and _configured != "sqlite:///./kural_local.db"
+database_url = _configured if _explicit else os.environ.get("DATABASE_URL", _configured)
 config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
@@ -30,6 +33,14 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.", poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
+        # Revision ids exceed Alembic's default VARCHAR(32) version column; create it wide enough
+        # first (required on PostgreSQL, which enforces VARCHAR lengths).
+        from sqlalchemy import text
+        if connection.dialect.name == "postgresql":
+            connection.execute(text("CREATE TABLE IF NOT EXISTS alembic_version "
+                                    "(version_num VARCHAR(128) NOT NULL, CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"))
+            connection.execute(text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(128)"))
+            connection.commit()
         context.configure(connection=connection, target_metadata=target_metadata,
                           compare_type=True)
         with context.begin_transaction():

@@ -105,7 +105,7 @@ def test_update_failure_creates_case_and_callback(repository: KuralRepository) -
     engine.turn(sid, "update failed")
     result = engine.turn(sid, "yes, please")
     assert result.case_id is not None
-    assert "does not place a real call" in result.response
+    assert "support case" in result.response and "call you back" in result.response
     case = repository.list_cases()[0]
     assert case["category"] == "APP_UPDATE_FAILURE"
     assert result.callback_id is not None

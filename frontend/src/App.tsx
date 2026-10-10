@@ -1,65 +1,78 @@
-/*
-THESIS: One role-aware operations workspace for a single, reconcilable call model.
-OWN-WORLD: Bank operations; synthetic Indian demo records, masked customer IDs.
-STORY: See outcomes → find risk → inspect a call → record a governed action.
-FIRST VIEWPORT: Navigation, current workspace, shared filters and a concise KPI/data state.
-FORM: Navy rail + bright canvas, restrained teal action color, semantic status accents.
-API: UI reads the typed dashboard adapter; demo mode uses deterministic synthetic data.
-*/
-import { lazy, Suspense } from "react";
+import React, { lazy, Suspense } from "react";
 import type { ComponentType } from "react";
-import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
-import { ROLE_ACCESS, ROUTES, type RouteKey } from "./config/permissions";
+import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
+import { allowedHubs, homePath, type HubKey } from "./config/hubs";
 import { AppShell } from "./components/AppShell";
 import { DashboardProvider } from "./hooks/DashboardContext";
-import { useRole } from "./hooks/useRole";
-import { RoleProvider } from "./hooks/useRole";
-import "./dashboard.css";
+import { AuthProvider, useAuth } from "./auth/AuthContext";
+import { LoginPage } from "./auth/LoginPage";
+import { Loading } from "./components/ui";
+import "./styles/ds.css";
 
 const OverviewPage = lazy(() => import("./pages/OverviewPage").then((m) => ({ default: m.OverviewPage })));
-const TeamPage = lazy(() => import("./pages/TeamPage").then((m) => ({ default: m.TeamPage })));
-const AgentWorkspacePage = lazy(() => import("./pages/AgentWorkspacePage").then((m) => ({ default: m.AgentWorkspacePage })));
-const LiveCallsPage = lazy(() => import("./pages/LiveCallsPage").then((m) => ({ default: m.LiveCallsPage })));
-const CallLogPage = lazy(() => import("./pages/CallLogPage").then((m) => ({ default: m.CallLogPage })));
-const CustomerJourneyPage = lazy(() => import("./pages/CustomerJourneyPage").then((m) => ({ default: m.CustomerJourneyPage })));
-const CallbacksPage = lazy(() => import("./pages/CallbacksPage").then((m) => ({ default: m.CallbacksPage })));
-const EscalationsPage = lazy(() => import("./pages/EscalationsPage").then((m) => ({ default: m.EscalationsPage })));
+const VoiceStudio = lazy(() => import("./pages/TestConsolePage").then((m) => ({ default: m.TestConsolePage })));
+const CallsHubPage = lazy(() => import("./pages/CallsHubPage").then((m) => ({ default: m.CallsHubPage })));
 const CampaignsPage = lazy(() => import("./pages/CampaignsPage").then((m) => ({ default: m.CampaignsPage })));
-const InsightsPage = lazy(() => import("./pages/InsightsPage").then((m) => ({ default: m.InsightsPage })));
-const ReportsPage = lazy(() => import("./pages/ReportsPage").then((m) => ({ default: m.ReportsPage })));
-const CompliancePage = lazy(() => import("./pages/CompliancePage").then((m) => ({ default: m.CompliancePage })));
-const SystemHealthPage = lazy(() => import("./pages/SystemHealthPage").then((m) => ({ default: m.SystemHealthPage })));
-const TestConsolePage = lazy(() => import("./pages/TestConsolePage").then((m) => ({ default: m.TestConsolePage })));
+const WorkQueuePage = lazy(() => import("./pages/WorkQueuePage").then((m) => ({ default: m.WorkQueuePage })));
+const TeamPage = lazy(() => import("./pages/TeamPage").then((m) => ({ default: m.TeamPage })));
+const GovernanceHubPage = lazy(() => import("./pages/GovernanceHubPage").then((m) => ({ default: m.GovernanceHubPage })));
 
-function LazyPage({ component: Component }: { component: ComponentType }) {
-  return <Suspense fallback={<div className="ops-page-state" role="status">Loading workspace…</div>}><Component /></Suspense>;
+function Page({ component: C }: { component: ComponentType }) {
+  return <Suspense fallback={<Loading />}><C /></Suspense>;
 }
-
-function Guard({ page }: { page: RouteKey }) {
-  const [role] = useRole();
-  const location = useLocation();
-  if (!ROLE_ACCESS[role].routes.includes(page)) return <Navigate to={ROUTES[ROLE_ACCESS[role].home].path} replace state={{ from: location.pathname }} />;
+function Guard({ page }: { page: HubKey }) {
+  const { user } = useAuth();
+  if (!allowedHubs(user?.permissions).includes(page)) return <Navigate to={homePath(user?.permissions)} replace />;
   return <Outlet />;
 }
-function RoleHome() { const [role] = useRole(); return <Navigate to={ROUTES[ROLE_ACCESS[role].home].path} replace />; }
+function Home() {
+  const { user } = useAuth();
+  return <Navigate to={homePath(user?.permissions)} replace />;
+}
+function Gate({ children }: { children: React.ReactNode }) {
+  const { user, checking, unreachable, retry } = useAuth();
+  if (checking) return <div className="boot" role="status">Checking your session…</div>;
+  if (unreachable && !user) return (
+    <div className="boot" role="alert"><div style={{ textAlign: "center" }}><h1 style={{ fontSize: 18, color: "var(--text)" }}>Cannot reach the AVA backend</h1>
+      <p>Your session may still be valid. Check the API server or network, then retry.</p><button className="btn primary" onClick={retry}>Retry</button></div></div>
+  );
+  if (!user) return <LoginPage />;
+  return <DashboardProvider>{children}</DashboardProvider>;
+}
 
 export default function App() {
-  return <BrowserRouter><RoleProvider><DashboardProvider><Routes><Route element={<AppShell />}>
-    <Route path="/" element={<RoleHome />} />
-    <Route element={<Guard page="executive" />}><Route path="/executive" element={<LazyPage component={OverviewPage} />} /></Route>
-    <Route element={<Guard page="team" />}><Route path="/team" element={<LazyPage component={TeamPage} />} /></Route>
-    <Route element={<Guard page="my-work" />}><Route path="/my-work" element={<LazyPage component={AgentWorkspacePage} />} /></Route>
-    <Route element={<Guard page="live-calls" />}><Route path="/live-calls" element={<LazyPage component={LiveCallsPage} />} /></Route>
-    <Route element={<Guard page="call-log" />}><Route path="/call-log" element={<LazyPage component={CallLogPage} />} /></Route>
-    <Route element={<Guard page="customer-journey" />}><Route path="/customer-journey" element={<LazyPage component={CustomerJourneyPage} />} /></Route>
-    <Route element={<Guard page="callbacks" />}><Route path="/callbacks" element={<LazyPage component={CallbacksPage} />} /></Route>
-    <Route element={<Guard page="escalations" />}><Route path="/escalations" element={<LazyPage component={EscalationsPage} />} /></Route>
-    <Route element={<Guard page="campaigns" />}><Route path="/campaigns" element={<LazyPage component={CampaignsPage} />} /></Route>
-    <Route element={<Guard page="insights" />}><Route path="/insights" element={<LazyPage component={InsightsPage} />} /></Route>
-    <Route element={<Guard page="reports" />}><Route path="/reports" element={<LazyPage component={ReportsPage} />} /></Route>
-    <Route element={<Guard page="compliance" />}><Route path="/compliance" element={<LazyPage component={CompliancePage} />} /></Route>
-    <Route element={<Guard page="system-health" />}><Route path="/system-health" element={<LazyPage component={SystemHealthPage} />} /></Route>
-    <Route element={<Guard page="test-console" />}><Route path="/test-console" element={<LazyPage component={TestConsolePage} />} /></Route>
-    <Route path="*" element={<RoleHome />} />
-  </Route></Routes></DashboardProvider></RoleProvider></BrowserRouter>;
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <Gate>
+          <Routes>
+            <Route element={<AppShell />}>
+              <Route path="/" element={<Home />} />
+              <Route element={<Guard page="executive" />}><Route path="/executive" element={<Page component={OverviewPage} />} /></Route>
+              <Route element={<Guard page="test-console" />}>
+                <Route path="/test-console" element={<Page component={VoiceStudio} />} />
+                <Route path="/voice" element={<Navigate to="/test-console" replace />} />
+              </Route>
+              <Route element={<Guard page="calls" />}><Route path="/calls" element={<Page component={CallsHubPage} />} /></Route>
+              <Route element={<Guard page="campaigns" />}><Route path="/campaigns" element={<Page component={CampaignsPage} />} /></Route>
+              <Route element={<Guard page="work" />}><Route path="/work" element={<Page component={WorkQueuePage} />} /></Route>
+              <Route element={<Guard page="team" />}><Route path="/team" element={<Page component={TeamPage} />} /></Route>
+              <Route element={<Guard page="governance" />}><Route path="/governance" element={<Page component={GovernanceHubPage} />} /></Route>
+              <Route path="/live-calls" element={<Navigate to="/calls" replace />} />
+              <Route path="/call-log" element={<Navigate to="/calls" replace />} />
+              <Route path="/customer-journey" element={<Navigate to="/calls?tab=customers" replace />} />
+              <Route path="/escalations" element={<Navigate to="/work" replace />} />
+              <Route path="/callbacks" element={<Navigate to="/work?tab=callbacks" replace />} />
+              <Route path="/my-work" element={<Navigate to="/work" replace />} />
+              <Route path="/compliance" element={<Navigate to="/governance?tab=compliance" replace />} />
+              <Route path="/system-health" element={<Navigate to="/governance" replace />} />
+              <Route path="/reports" element={<Navigate to="/calls" replace />} />
+              <Route path="/insights" element={<Navigate to="/executive" replace />} />
+              <Route path="*" element={<Home />} />
+            </Route>
+          </Routes>
+        </Gate>
+      </AuthProvider>
+    </BrowserRouter>
+  );
 }

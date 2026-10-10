@@ -56,6 +56,7 @@ class Action(StrEnum):
     END_SESSION = "end_session"
     CREATE_APP_UPDATE_CASE = "create_app_update_case"
     REQUEST_CALLBACK = "request_callback"
+    CREATE_HUMAN_SUPPORT_CASE = "create_human_support_case"
 
 
 class IssueCategory(StrEnum):
