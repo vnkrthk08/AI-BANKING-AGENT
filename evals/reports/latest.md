@@ -1,5 +1,5 @@
 # KURAL AVA Evaluation Report — GOLDEN
-**Run at:** `2026-10-09T17:02:46.617840+00:00`
+**Run at:** `2026-10-10T07:31:52.770859+00:00`
 
 ## Summary Metrics
 | Metric | Target | Result | Status |
