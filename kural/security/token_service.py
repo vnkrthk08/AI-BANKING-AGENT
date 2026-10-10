@@ -11,6 +11,7 @@ import secrets
 import time
 from typing import Any, Dict, Optional, Tuple
 
+from dotenv import load_dotenv
 from fastapi import HTTPException, status
 
 from kural.security.crypto import (
@@ -21,6 +22,9 @@ from kural.security.crypto import (
 )
 from kural.security.revocation_cache import revocation_cache
 
+load_dotenv()
+# Development/test fallback only: production startup refuses to run without KURAL_MASTER_KEY
+# (see kural.config.validate_startup).
 DEFAULT_MASTER_KEY = os.getenv("KURAL_MASTER_KEY", "kural-ava-production-master-key-32b!!").encode("utf-8")[:32]
 if len(DEFAULT_MASTER_KEY) < 32:
     DEFAULT_MASTER_KEY = DEFAULT_MASTER_KEY.ljust(32, b"0")

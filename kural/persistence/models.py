@@ -86,8 +86,32 @@ class CaseRow(Base):
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     callback_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     callback_cancelled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    assigned_agent_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    assigned_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    first_response_due_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    resolution_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(20), default="VOICE_AI", nullable=False)
+    sla_warning_sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    sla_breached_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class CaseEventRow(Base):
+    """Append-only lifecycle history for a support case (assignment, status, notes, resolution)."""
+
+    __tablename__ = "case_events"
+
+    event_id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: f"CSE-{uuid4().hex[:12].upper()}")
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.case_id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    from_value: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    to_value: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actor: Mapped[str] = mapped_column(String(64), default="SYSTEM", nullable=False)
+    actor_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
 
 
 class CallbackRow(Base):
@@ -107,6 +131,7 @@ class CallbackRow(Base):
             sqlite_where=text("status = 'SCHEDULED' AND case_id IS NULL"),
             postgresql_where=text("status = 'SCHEDULED' AND case_id IS NULL"),
         ),
+        Index("ix_callbacks_due", "status", "scheduled_at_utc"),
     )
 
     callback_id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: f"CB-{uuid4().hex[:8].upper()}")
@@ -128,6 +153,16 @@ class CallbackRow(Base):
     idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
     rescheduled_from_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     superseded_by_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_outcome: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    outcome_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_call_sid: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    call_record_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    dispatch_locked_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    dispatched_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
     # Legacy compatibility column
     requested_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
@@ -217,6 +252,11 @@ class CampaignRow(Base):
     region: Mapped[str] = mapped_column(String(60), default="All India", nullable=False)
     calls_dialed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     answer_rate: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    category: Mapped[str] = mapped_column(String(20), default="SERVICE", nullable=False)
+    max_concurrent: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
+    approved_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -238,6 +278,8 @@ class CampaignContactRow(Base):
     next_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     last_disposition: Mapped[str | None] = mapped_column(String(40), nullable=True)
     last_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    provider_call_sid: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    call_record_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -250,7 +292,7 @@ class CallRecordRow(Base):
     customer_ref: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     campaign_id: Mapped[str | None] = mapped_column(ForeignKey("campaigns.campaign_id", ondelete="SET NULL"), nullable=True, index=True)
     campaign_name: Mapped[str] = mapped_column(String(128), default="Inbound / Direct", nullable=False)
-    masked_phone: Mapped[str] = mapped_column(String(20), default="+91 98XXX XX000", nullable=False)
+    masked_phone: Mapped[str] = mapped_column(String(24), default="", nullable=False)
     language: Mapped[str] = mapped_column(String(20), default="Hindi", nullable=False)
     region: Mapped[str] = mapped_column(String(40), default="West", nullable=False)
     branch: Mapped[str] = mapped_column(String(80), default="Mumbai Metro", nullable=False)
@@ -259,8 +301,8 @@ class CallRecordRow(Base):
     disposition: Mapped[str | None] = mapped_column(String(40), nullable=True)
     resolution_mode: Mapped[str] = mapped_column(String(20), default="AI", nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="IN_PROGRESS", nullable=False)
-    connected: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    consented: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    connected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    consented: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     app_installed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     app_updated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     app_version: Mapped[str] = mapped_column(String(20), default="—", nullable=False)
@@ -271,12 +313,15 @@ class CallRecordRow(Base):
     kural_state: Mapped[str] = mapped_column(String(40), default="READY", nullable=False)
     intent: Mapped[str] = mapped_column(String(40), default="UNKNOWN", nullable=False)
     policy_decision: Mapped[str] = mapped_column(String(20), default="ALLOWED", nullable=False)
-    cost_inr: Mapped[float] = mapped_column(Float, default=0.50, nullable=False)
+    cost_inr: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     compliance_flags_json: Mapped[list[str]] = mapped_column("compliance_flags", JSON, default=list, nullable=False)
     feature_interest_json: Mapped[list[str]] = mapped_column("feature_interest", JSON, default=list, nullable=False)
     summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
     recording_available: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     recording_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    channel: Mapped[str] = mapped_column(String(20), default="BROWSER", nullable=False)
+    provider_call_sid: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
 
 
@@ -289,10 +334,15 @@ class AgentRow(Base):
     languages_json: Mapped[list[str]] = mapped_column("languages", JSON, default=lambda: ["Hindi", "English"], nullable=False)
     availability: Mapped[str] = mapped_column(String(20), default="AVAILABLE", nullable=False)
     active_calls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Legacy stored counters retained for schema compatibility; live metrics are derived from cases/callbacks.
     handled_today: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    avg_resolution_min: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
-    sla_hit_percent: Mapped[int] = mapped_column(Integer, default=95, nullable=False)
+    avg_resolution_min: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sla_hit_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     skills_json: Mapped[list[str]] = mapped_column("skills", JSON, default=lambda: ["APP_SUPPORT", "GENERAL_SUPPORT"], nullable=False)
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)
+    phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    max_open_cases: Mapped[int] = mapped_column(Integer, default=12, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -320,6 +370,7 @@ class UserRow(Base):
     full_name: Mapped[str] = mapped_column(String(128), nullable=False)
     role: Mapped[str] = mapped_column(String(32), default="AGENT", nullable=False)
     branch: Mapped[str] = mapped_column(String(80), default="Mumbai Metro", nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     mfa_secret: Mapped[str | None] = mapped_column(String(128), nullable=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     token_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -414,5 +465,58 @@ class NotificationRow(Base):
     read_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
+class NotificationDeliveryRow(Base):
+    """One delivery attempt chain for one notification over one channel to one recipient."""
+
+    __tablename__ = "notification_deliveries"
+    __table_args__ = (
+        Index("ix_notification_deliveries_due", "status", "next_attempt_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: f"DLV-{uuid4().hex[:12].upper()}")
+    notification_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    source_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    recipient_label: Mapped[str] = mapped_column(String(128), nullable=False)
+    recipient_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    subject: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="QUEUED", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    locked_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False)
+    delivered_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
+class TelephonyEventRow(Base):
+    """Persisted provider webhook receipts used for replay protection and reconciliation history."""
+
+    __tablename__ = "telephony_events"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: f"TEV-{uuid4().hex[:12].upper()}")
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    provider_call_sid: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    call_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    applied: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    received_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
+class SystemSettingRow(Base):
+    """Small persisted operator controls (e.g. the outbound-dialing emergency stop)."""
+
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value_json: Mapped[dict[str, Any]] = mapped_column("value", JSON, default=dict, nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False)

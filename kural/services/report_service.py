@@ -16,50 +16,103 @@ class ReportService:
         self.database = database
 
     def get_kpi_summary(self, campaign_id: str | None = None) -> dict[str, Any]:
+        """Call KPIs computed only from persisted call records (no placeholder values)."""
         with self.database.session() as s:
             q = select(CallRecordRow)
             if campaign_id:
                 q = q.where(CallRecordRow.campaign_id == campaign_id)
             calls = s.scalars(q).all()
 
-            total_dialed = len(calls)
-            if total_dialed == 0:
-                return {
-                    "callsDialed": 0,
-                    "connected": 0,
-                    "answerRate": 0.0,
-                    "closed": 0,
-                    "callbacks": 0,
-                    "escalated": 0,
-                    "refusedDnd": 0,
-                    "averageDurationSec": 0,
-                    "averageSentiment": 0.0,
-                    "costPerCallInr": 0.50,
-                    "costPerResolvedInr": 1.20,
-                }
-
+            total = len(calls)
             connected = [c for c in calls if c.connected]
-            closed = [c for c in calls if c.disposition == "CLOSED"]
-            callbacks = [c for c in calls if c.disposition == "CALLBACK_SCHEDULED"]
-            escalated = [c for c in calls if c.disposition == "ESCALATED"]
-            dnd = [c for c in calls if c.disposition == "DND"]
+            by_disposition: dict[str, int] = {}
+            for c in calls:
+                key = c.disposition or ("IN_PROGRESS" if c.status == "IN_PROGRESS" else "UNKNOWN")
+                by_disposition[key] = by_disposition.get(key, 0) + 1
+            completed = [c for c in calls if c.status != "IN_PROGRESS"]
+            return {
+                "callsDialed": total,
+                "connected": len(connected),
+                "answerRate": round(len(connected) / total, 2) if total else None,
+                "closed": by_disposition.get("CLOSED", 0),
+                "callbacks": by_disposition.get("CALLBACK_SCHEDULED", 0),
+                "escalated": by_disposition.get("ESCALATED", 0),
+                "noResponse": by_disposition.get("NO_RESPONSE", 0),
+                "refusedDnd": by_disposition.get("DND", 0),
+                "averageDurationSec": round(sum(c.duration_sec for c in completed) / len(completed), 1) if completed else None,
+                "byDisposition": by_disposition,
+            }
 
-            avg_dur = sum(c.duration_sec for c in calls) / total_dialed
-            avg_sent = sum(c.sentiment for c in calls) / total_dialed
-            tot_cost = sum(c.cost_inr for c in calls)
+    def get_overview(self) -> dict[str, Any]:
+        """Operational overview for the Overview hub, derived from persisted records only."""
+        from datetime import timedelta
+        from zoneinfo import ZoneInfo
+
+        from kural.persistence.models import AgentRow, CallbackRow, CampaignRow, CaseRow, NotificationDeliveryRow
+
+        ist = ZoneInfo("Asia/Kolkata")
+        now = datetime.now(timezone.utc)
+        today_start = now.astimezone(ist).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+        window_start = today_start - timedelta(days=13)
+        open_case_statuses = ("NEW", "ASSIGNED", "IN_PROGRESS", "PENDING_CUSTOMER")
+        with self.database.session() as s:
+            calls = s.scalars(select(CallRecordRow).where(CallRecordRow.started_at >= window_start)).all()
+            daily: dict[str, dict[str, int]] = {}
+            for i in range(14):
+                d = (window_start + timedelta(days=i)).astimezone(ist).date().isoformat()
+                daily[d] = {"calls": 0, "connected": 0, "resolved": 0}
+            for c in calls:
+                d = c.started_at.astimezone(ist).date().isoformat()
+                if d in daily:
+                    daily[d]["calls"] += 1
+                    daily[d]["connected"] += int(c.connected)
+                    daily[d]["resolved"] += int(c.disposition == "CLOSED")
+            today_calls = [c for c in calls if c.started_at >= today_start]
+            outcomes: dict[str, int] = {}
+            for c in calls:
+                if c.disposition:
+                    outcomes[c.disposition] = outcomes.get(c.disposition, 0) + 1
+            stale_cutoff = now - timedelta(hours=2)
+            live_calls = s.scalar(select(func.count(CallRecordRow.call_id)).where(
+                CallRecordRow.status == "IN_PROGRESS", CallRecordRow.started_at >= stale_cutoff)) or 0
+
+            open_cases = s.scalars(select(CaseRow).where(CaseRow.status.in_(open_case_statuses))).all()
+            callbacks = s.scalars(select(CallbackRow).where(CallbackRow.status.in_(("SCHEDULED", "DUE", "DIALING", "REQUESTED")))).all()
+            agents = s.scalars(select(AgentRow)).all()
+            failed_deliveries = s.scalar(select(func.count(NotificationDeliveryRow.id)).where(
+                NotificationDeliveryRow.status == "FAILED")) or 0
+            active_campaigns = s.scalar(select(func.count(CampaignRow.campaign_id)).where(CampaignRow.status == "ACTIVE")) or 0
 
             return {
-                "callsDialed": total_dialed,
-                "connected": len(connected),
-                "answerRate": round(len(connected) / total_dialed, 2),
-                "closed": len(closed),
-                "callbacks": len(callbacks),
-                "escalated": len(escalated),
-                "refusedDnd": len(dnd),
-                "averageDurationSec": round(avg_dur, 1),
-                "averageSentiment": round(avg_sent, 2),
-                "costPerCallInr": round(tot_cost / total_dialed, 2),
-                "costPerResolvedInr": round(tot_cost / max(len(closed), 1), 2),
+                "generatedAt": now.isoformat(),
+                "today": {
+                    "calls": len(today_calls),
+                    "connected": sum(1 for c in today_calls if c.connected),
+                    "resolvedByAi": sum(1 for c in today_calls if c.disposition == "CLOSED"),
+                    "escalated": sum(1 for c in today_calls if c.disposition == "ESCALATED"),
+                    "callbacksBooked": sum(1 for c in today_calls if c.disposition == "CALLBACK_SCHEDULED"),
+                    "noResponse": sum(1 for c in today_calls if c.disposition == "NO_RESPONSE"),
+                },
+                "liveCalls": live_calls,
+                "queues": {
+                    "openCases": len(open_cases),
+                    "unassignedCases": sum(1 for c in open_cases if not c.assigned_agent_id),
+                    "slaBreached": sum(1 for c in open_cases if c.sla_due_at and c.sla_due_at < now),
+                    "urgentCases": sum(1 for c in open_cases if c.priority == "Urgent"),
+                    "scheduledCallbacks": sum(1 for c in callbacks if c.status == "SCHEDULED"),
+                    "dueCallbacks": sum(1 for c in callbacks if c.status == "DUE"
+                                        or (c.status == "SCHEDULED" and c.scheduled_at_utc and c.scheduled_at_utc < now)),
+                    "callbacksNeedingTime": sum(1 for c in callbacks if c.status == "REQUESTED"),
+                },
+                "team": {
+                    "total": len(agents),
+                    "available": sum(1 for a in agents if a.availability == "AVAILABLE"),
+                    "onCall": sum(1 for a in agents if a.availability == "ON_CALL"),
+                },
+                "campaigns": {"active": active_campaigns},
+                "notifications": {"failedDeliveries": failed_deliveries},
+                "dailyVolume": [{"date": d, **v} for d, v in daily.items()],
+                "outcomes14d": outcomes,
             }
 
     def list_schedules(self) -> list[dict[str, Any]]:
@@ -87,7 +140,7 @@ class ReportService:
             cadence=data.get("cadence", "DAILY"),
             time_of_day=data.get("time", "08:00"),
             formats_json=data.get("formats", ["PDF", "XLSX"]),
-            recipient=data.get("recipient", "ops@townbank.demo"),
+            recipient=data.get("recipient") or "",
             enabled=data.get("enabled", True),
             demo_only=data.get("demoOnly", True),
             created_at=now,

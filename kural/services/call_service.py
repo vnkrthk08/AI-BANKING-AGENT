@@ -10,8 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kural.persistence.database import Database
-from kural.persistence.models import CallRecordRow, ConversationTurnRow, SessionRow
-from kural.services.recording_service import ensure_recording_exists, get_recording_path, redact_pii
+from kural.persistence.models import CallRecordRow, CampaignRow, ConversationTurnRow, CustomerRow, SessionRow
+from kural.privacy.masking import mask_phone
+from kural.services.recording_service import redact_pii
 
 
 def sanitize_csv_value(val: Any) -> Any:
@@ -30,47 +31,53 @@ class CallService:
         session_id: str,
         customer_ref: str,
         campaign_id: str | None = None,
-        campaign_name: str = "Inbound / Direct",
-        masked_phone: str = "+91 98XXX XX000",
-        language: str = "Hindi",
-        region: str = "West",
-        branch: str = "Mumbai Metro",
+        campaign_name: str | None = None,
+        channel: str = "BROWSER",
+        call_id: str | None = None,
+        provider_call_sid: str | None = None,
+        status: str = "IN_PROGRESS",
     ) -> dict[str, Any]:
-        call_id = f"CALL-{uuid4().hex[:8].upper()}"
+        call_id = call_id or f"CALL-{uuid4().hex[:8].upper()}"
         now = datetime.now(timezone.utc)
-        row = CallRecordRow(
-            call_id=call_id,
-            session_id=session_id,
-            customer_ref=customer_ref,
-            campaign_id=campaign_id,
-            campaign_name=campaign_name,
-            masked_phone=masked_phone,
-            language=language,
-            region=region,
-            branch=branch,
-            started_at=now,
-            duration_sec=0,
-            disposition=None,
-            resolution_mode="OPEN",
-            status="IN_PROGRESS",
-            connected=True,
-            consented=True,
-            app_installed=False,
-            app_updated=False,
-            app_version="—",
-            sentiment=0.0,
-            issue_category=None,
-            kural_state="READY",
-            intent="UNKNOWN",
-            policy_decision="ALLOWED",
-            cost_inr=0.45,
-            compliance_flags_json=[],
-            feature_interest_json=[],
-            summary="",
-            recording_available=True,
-            created_at=now,
-        )
         with self.database.session() as s:
+            customer = s.get(CustomerRow, customer_ref)
+            if campaign_name is None and campaign_id:
+                campaign = s.get(CampaignRow, campaign_id)
+                campaign_name = campaign.name if campaign else None
+            row = CallRecordRow(
+                call_id=call_id,
+                session_id=session_id,
+                customer_ref=customer_ref,
+                campaign_id=campaign_id,
+                campaign_name=campaign_name or ("Voice Studio session" if channel == "BROWSER" else "Direct call"),
+                masked_phone=mask_phone(customer.phone) if customer else "",
+                language=customer.preferred_language if customer else "English",
+                region=customer.region if customer else "",
+                branch=customer.branch if customer else "",
+                started_at=now,
+                duration_sec=0,
+                disposition=None,
+                resolution_mode="AI",
+                status=status,
+                connected=channel == "BROWSER",
+                consented=False,
+                app_installed=bool(customer and customer.app_status in ("INSTALLED", "OUTDATED", "UPDATED")),
+                app_updated=False,
+                app_version=(customer.app_version if customer and customer.app_version else "—"),
+                sentiment=0.0,
+                issue_category=None,
+                kural_state="READY",
+                intent="UNKNOWN",
+                policy_decision="ALLOWED",
+                cost_inr=0.0,
+                compliance_flags_json=[],
+                feature_interest_json=[],
+                summary="",
+                recording_available=False,
+                channel=channel,
+                provider_call_sid=provider_call_sid,
+                created_at=now,
+            )
             existing = s.scalar(select(CallRecordRow).where(CallRecordRow.session_id == session_id))
             if existing is not None:
                 return self._serialize_call(existing)
@@ -185,9 +192,9 @@ class CallService:
             "disposition",
             "resolutionMode",
             "status",
-            "sentiment",
             "kuralState",
-            "costInr",
+            "intent",
+            "channel",
         ]
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
@@ -230,4 +237,8 @@ class CallService:
             "featureInterest": row.feature_interest_json,
             "summary": row.summary,
             "recordingAvailable": row.recording_available,
+            "channel": row.channel,
+            "providerCallSid": row.provider_call_sid,
+            "endedAt": row.ended_at.isoformat() if row.ended_at else None,
+            "retentionUntil": None,
         }

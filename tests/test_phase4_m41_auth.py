@@ -15,6 +15,8 @@ Covers:
 """
 
 import time
+import pytest as _pytest
+pytestmark = _pytest.mark.real_auth
 import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect

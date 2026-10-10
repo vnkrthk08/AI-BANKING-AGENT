@@ -140,6 +140,7 @@ def test_blind_index_deterministic_search():
 def test_pre_dispatch_dnd_fail_closed():
     """Verify simulated telecom DND registry timeout blocks outbound dialing immediately."""
     engine = CallingPolicyEngine(dnd_timeout_sec=2.0)
+    engine.add_dnd_number("9876543210")
 
     # Registered number blocked
     allowed, reason = engine.evaluate_dnd_status("9876543210")

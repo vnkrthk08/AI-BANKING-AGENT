@@ -92,6 +92,7 @@ def test_at_cb_2_reschedule_same_call_updates_same_record_and_shows_moved(clean_
             "scheduled_at_utc": dt_6pm.isoformat(),
             "scheduled_at_local": "Wednesday, 7 October, 6:00 PM IST",
             "raw_expression": "actually make it 6",
+            "on_behalf_of_customer": True,
         },
     )
     assert resp2.status_code == 200
@@ -129,7 +130,7 @@ def test_at_cb_3_customer_cancels_status_cancelled(clean_db, client):
     cb_id = create_resp.json()["callback_id"]
 
     # Cancel callback
-    cancel_resp = client.post(f"/api/callbacks/{cb_id}/cancel")
+    cancel_resp = client.post(f"/api/callbacks/{cb_id}/cancel", json={"on_behalf_of_customer": True})
     assert cancel_resp.status_code == 200
     cancelled_cb = cancel_resp.json()
     assert cancelled_cb["status"] == "CANCELLED"

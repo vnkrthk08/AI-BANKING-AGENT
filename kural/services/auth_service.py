@@ -27,6 +27,7 @@ from kural.security.token_service import (
 )
 
 logger = logging.getLogger("kural.services.auth")
+_DUMMY_HASH = hash_password("kural-timing-equaliser-not-a-real-password")
 
 
 class AuthService:
@@ -50,6 +51,7 @@ class AuthService:
         full_name: str,
         role: str = "AGENT",
         branch: str = "Mumbai Metro",
+        phone: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a new user with Argon2id hashed password."""
         with self.db.session() as s:
@@ -66,6 +68,7 @@ class AuthService:
                 full_name=full_name,
                 role=role,
                 branch=branch,
+                phone=phone,
                 token_version=0,
                 is_active=True,
             )
@@ -81,11 +84,48 @@ class AuthService:
                 "branch": user.branch,
             }
 
+    @staticmethod
+    def _public_user(user: UserRow) -> Dict[str, Any]:
+        return {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role,
+            "branch": user.branch,
+            "is_active": user.is_active,
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+        }
+
+    def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        with self.db.session() as s:
+            user = s.get(UserRow, user_id)
+            return self._public_user(user) if user else None
+
+    def list_users(self) -> list[Dict[str, Any]]:
+        with self.db.session() as s:
+            return [self._public_user(u) for u in s.scalars(select(UserRow).order_by(UserRow.username)).all()]
+
+    def set_active(self, user_id: str, active: bool) -> Dict[str, Any]:
+        with self.db.session() as s:
+            user = s.get(UserRow, user_id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            user.is_active = active
+            if not active:
+                user.token_version += 1
+                s.execute(update(RefreshTokenRow).where(RefreshTokenRow.user_id == user_id).values(status="REVOKED"))
+            s.commit()
+            revocation_cache.invalidate_user(user.id, user.token_version)
+            return self._public_user(user)
+
     def authenticate_user(self, username: str, password: str) -> Dict[str, Any]:
         """Verify user credentials and return user record."""
         with self.db.session() as s:
             user = s.scalar(select(UserRow).where(UserRow.username == username))
             if not user or not user.is_active:
+                # Equalise timing so unknown usernames are not distinguishable from wrong passwords.
+                verify_password(password, _DUMMY_HASH)
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
             if not verify_password(password, user.password_hash):

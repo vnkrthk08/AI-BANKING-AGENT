@@ -38,5 +38,7 @@ include = ["app*", "kural*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q"
+markers = ["real_auth: run with genuine authentication and RBAC enforcement"]
 

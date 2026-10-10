@@ -41,107 +41,20 @@ def create_app(repository: KuralRepository | None = None,
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         import asyncio
-        from datetime import datetime, timezone
-        from sqlalchemy import select
-        from kural.persistence.models import CallbackRow
-        from kural.services.event_bus import event_bus
-
-        stop_worker = asyncio.Event()
-
-        async def callback_scheduler_worker():
-            """Polls callbacks table every 10s for due callbacks so they reflect in dashboard."""
-            while not stop_worker.is_set():
-                try:
-                    await asyncio.sleep(10)
-                    db = getattr(app.state, "database", None)
-                    if db is not None:
-                        with db.session() as s:
-                            now = datetime.now(timezone.utc)
-                            due = s.scalars(
-                                select(CallbackRow).where(
-                                    CallbackRow.status == "SCHEDULED",
-                                    CallbackRow.scheduled_at_utc.is_not(None),
-                                    CallbackRow.scheduled_at_utc <= now,
-                                )
-                            ).all()
-                            for cb in due:
-                                cb.status = "DUE"
-                                event_bus.publish("callback_due", {
-                                    "callback_id": cb.callback_id,
-                                    "customer_ref": cb.customer_ref,
-                                })
-                                notif_svc = getattr(app.state, "notification_service", None)
-                                if notif_svc is not None:
-                                    notif_svc.create_notification(
-                                        title="Customer Callback Due",
-                                        message=f"Callback {cb.callback_id} for customer {cb.customer_ref} is now due.",
-                                        level="WARNING",
-                                        category="CALLBACK",
-                                        link_url="/work",
-                                    )
-                            if due:
-                                s.commit()
-                except asyncio.CancelledError:
-                    break
-                except Exception as exc:
-                    logger.warning("Callback scheduler worker encountered transient error: %s", exc)
-
-        async def campaign_pacing_worker():
-            """Polls active campaigns and processes queued contacts via the configured telephony provider."""
-            from kural.policy.calling_policy import is_sunday, is_within_calling_hours
-            from kural.telephony.contracts import TelephonyCallRequest
-
-            while not stop_worker.is_set():
-                try:
-                    await asyncio.sleep(5)
-                    camp_svc = getattr(app.state, "campaign_service", None)
-                    telephony = getattr(app.state, "telephony_provider", None)
-                    if camp_svc is not None and telephony is not None and telephony.is_configured:
-                        now_utc = datetime.now(timezone.utc)
-                        if is_sunday(now_utc) or not is_within_calling_hours(now_utc):
-                            continue
-
-                        active_camps = camp_svc.list_campaigns(status="ACTIVE")
-                        for camp in active_camps:
-                            queued = camp_svc.get_queued_contacts(camp["id"], batch_size=2)
-                            for contact in queued:
-                                call_id = f"CMP-{contact['contact_id']}"
-                                req = TelephonyCallRequest(
-                                    to_phone=contact["phone"],
-                                    from_phone=getattr(telephony, "caller_id", "+91 1800 200 4400"),
-                                    customer_ref=contact["customer_ref"],
-                                    call_id=call_id,
-                                    campaign_id=camp["id"],
-                                    metadata={"contact_id": contact["contact_id"]},
-                                )
-                                res = await telephony.initiate_call(req)
-                                disp = "INITIATED" if res.success else "FAILED"
-                                camp_svc.record_attempt(
-                                    contact["contact_id"], disp, res.provider_call_sid or call_id
-                                )
-                                event_bus.publish("campaign_progress", {
-                                    "campaign_id": camp["id"],
-                                    "contact_id": contact["contact_id"],
-                                    "disposition": disp,
-                                    "call_id": call_id,
-                                })
-                except asyncio.CancelledError:
-                    break
-                except Exception as exc:
-                    logger.warning("Campaign pacing worker encountered transient error: %s", exc)
+        from kural.workers import WorkerRunner
 
         auth_svc = getattr(app.state, "auth_service", None)
         if auth_svc is not None:
             auth_svc.startup_cache_sync()
-
-        cb_task = asyncio.create_task(callback_scheduler_worker())
-        camp_task = asyncio.create_task(campaign_pacing_worker())
+        runner_task = None
+        if app.state.settings.run_workers:
+            runner = WorkerRunner(app.state.database, app.state.notification_service, get_telephony_provider)
+            app.state.worker_runner = runner
+            runner_task = asyncio.create_task(runner.run())
         yield
-        stop_worker.set()
-        cb_task.cancel()
-        camp_task.cancel()
-        await asyncio.gather(cb_task, camp_task, return_exceptions=True)
-
+        if runner_task is not None:
+            app.state.worker_runner.stop()
+            await asyncio.gather(runner_task, return_exceptions=True)
         close = getattr(app.state.tts_provider, "close", None)
         if close is not None:
             await close()
@@ -151,7 +64,7 @@ def create_app(repository: KuralRepository | None = None,
 
     app = FastAPI(
         title="KURAL AVA",
-        description="KURAL decision API for the AVA browser demo. Synthetic data only; not for production use.",
+        description="KURAL AVA voice banking operations API.",
         version="0.3.0",
         lifespan=lifespan,
     )
@@ -164,8 +77,13 @@ def create_app(repository: KuralRepository | None = None,
         if db is None:
             db = Database()
         app.state.database = db
-    from kural.persistence.models import Base
-    Base.metadata.create_all(app.state.database.engine)
+    from kural.config import get_settings, validate_startup
+    settings = get_settings()
+    problems = validate_startup(settings)
+    if problems:
+        raise RuntimeError("Refusing to start: " + " | ".join(problems))
+    app.state.settings = settings
+    app.state.database.prepare_schema(auto_migrate=settings.auto_migrate)
     app.state.repository = repository
     app.state.callback_service = CallbackService(app.state.database)
     app.state.case_service = CaseService(app.state.database)
@@ -190,24 +108,40 @@ def create_app(repository: KuralRepository | None = None,
     app.include_router(auth_router)
     app.include_router(telephony_router)
     app.include_router(notification_router)
+    from app.routers.system import system_router
+    app.include_router(system_router)
+    if app.state.settings.cors_origins:
+        from fastapi.middleware.cors import CORSMiddleware
+        app.add_middleware(CORSMiddleware, allow_origins=app.state.settings.cors_origins,
+                           allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def root() -> str:
         """Point visitors to the actual Vite AVA development interface."""
         return """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>AVA · KURAL</title>
-<script>window.location.replace('http://127.0.0.1:5173/')</script></head>
+</head>
 <body><main><h1>KURAL AVA</h1><p>The AVA interface runs at
 <a href="http://127.0.0.1:5173/">http://127.0.0.1:5173/</a>.</p></main></body></html>"""
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:
+        """Liveness: the process is up and can reach its database."""
         app.state.repository.health_check()
-        return {"status": "ok", "service": "kural-ava", "mode": "prototype"}
+        return {"status": "ok", "service": "kural-ava", "environment": app.state.settings.app_env}
 
     @app.get("/health/ready", tags=["health"])
     def readiness() -> dict[str, str]:
+        """Readiness: database reachable, schema at Alembic head, auth cache synchronised."""
         from kural.security.revocation_cache import revocation_cache
+        from app.routers.system import schema_status
+        try:
+            app.state.repository.health_check()
+        except Exception:
+            raise HTTPException(status_code=503, detail="Database unavailable")
+        schema = schema_status(app.state.database)
+        if not schema["at_head"]:
+            raise HTTPException(status_code=503, detail="Database schema is not at the latest migration")
         if not revocation_cache.is_ready:
             raise HTTPException(status_code=503, detail="Service not ready: revocation cache synchronizing")
         return {"status": "ready"}
