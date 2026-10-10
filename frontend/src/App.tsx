@@ -1,10 +1,9 @@
 import React, { lazy, Suspense } from "react";
 import type { ComponentType } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
-import { ROLE_ACCESS, ROUTES, type RouteKey } from "./config/permissions";
+import { allowedHubs, homePath, type HubKey } from "./config/hubs";
 import { AppShell } from "./components/AppShell";
 import { DashboardProvider } from "./hooks/DashboardContext";
-import { useRole } from "./hooks/useRole";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { LoginPage } from "./auth/LoginPage";
 import { Loading } from "./components/ui";
@@ -21,18 +20,22 @@ const GovernanceHubPage = lazy(() => import("./pages/GovernanceHubPage").then((m
 function Page({ component: C }: { component: ComponentType }) {
   return <Suspense fallback={<Loading />}><C /></Suspense>;
 }
-function Guard({ page }: { page: RouteKey }) {
-  const [role] = useRole();
-  if (!ROLE_ACCESS[role].routes.includes(page)) return <Navigate to={ROUTES[ROLE_ACCESS[role].home].path} replace />;
+function Guard({ page }: { page: HubKey }) {
+  const { user } = useAuth();
+  if (!allowedHubs(user?.permissions).includes(page)) return <Navigate to={homePath(user?.permissions)} replace />;
   return <Outlet />;
 }
 function Home() {
-  const [role] = useRole();
-  return <Navigate to={ROUTES[ROLE_ACCESS[role].home].path} replace />;
+  const { user } = useAuth();
+  return <Navigate to={homePath(user?.permissions)} replace />;
 }
 function Gate({ children }: { children: React.ReactNode }) {
-  const { user, checking } = useAuth();
+  const { user, checking, unreachable, retry } = useAuth();
   if (checking) return <div className="boot" role="status">Checking your session…</div>;
+  if (unreachable && !user) return (
+    <div className="boot" role="alert"><div style={{ textAlign: "center" }}><h1 style={{ fontSize: 18, color: "var(--text)" }}>Cannot reach the AVA backend</h1>
+      <p>Your session may still be valid. Check the API server or network, then retry.</p><button className="btn primary" onClick={retry}>Retry</button></div></div>
+  );
   if (!user) return <LoginPage />;
   return <DashboardProvider>{children}</DashboardProvider>;
 }

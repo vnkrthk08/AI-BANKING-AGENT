@@ -217,3 +217,38 @@ def test_rbac_enforced_server_side(tmp_path):
         assert client.get("/api/events/sse").status_code == 401
         me = client.get("/api/v1/auth/me", headers=agent).json()["user"]
         assert me["role"] == "AGENT" and "campaign:manage" not in me["permissions"]
+
+
+def test_callback_assign_and_manual_outcome_routes(tmp_path):
+    repo = SqlAlchemyKuralRepository(Database(f"sqlite:///{(tmp_path / 'cbr.db').as_posix()}"))
+    with TestClient(create_app(repository=repo)) as client:
+        db = repo.database
+        _staff(db)
+        CustomerService(db).create_customer("Kiran", "9855555555", customer_ref="CUST-CBR")
+        from kural.services.callback_service import CallbackDraft, format_local
+        slot = next_permitted_slot(datetime.now(timezone.utc) + timedelta(days=1))
+        cb = CallbackService(db).upsert_callback("S-CBR", "CUST-CBR", CallbackDraft(slot, format_local(slot)), actor="STAFF:x")
+        cid = cb["callback_id"]
+        r = client.post(f"/api/callbacks/{cid}/assign", json={"agent_id": "AG-001"})
+        assert r.status_code == 200 and r.json()["assigned_agent_id"] == "AG-001"
+        assert client.post(f"/api/callbacks/{cid}/assign", json={"agent_id": "AG-404"}).status_code == 404
+        assert client.post(f"/api/callbacks/{cid}/outcome", json={"outcome": "MAYBE"}).status_code == 422
+        busy = client.post(f"/api/callbacks/{cid}/outcome", json={"outcome": "BUSY", "notes": "No pickup"}).json()
+        assert busy["raw_status"] == "DUE" and busy["attempt_count"] == 1
+        done = client.post(f"/api/callbacks/{cid}/outcome", json={"outcome": "COMPLETED", "notes": "Resolved app issue"}).json()
+        assert done["raw_status"] == "COMPLETED" and done["outcome_notes"] == "Resolved app issue"
+        assert client.post(f"/api/callbacks/{cid}/outcome", json={"outcome": "COMPLETED"}).status_code == 409
+        types = [h["event_type"] for h in done["history"]]
+        assert "ASSIGNED" in types and "OUTCOME_BUSY" in types and "OUTCOME_COMPLETED" in types
+
+
+def test_text_session_disposition_uses_operational_category(tmp_path):
+    repo = SqlAlchemyKuralRepository(Database(f"sqlite:///{(tmp_path / 'disp.db').as_posix()}"))
+    with TestClient(create_app(repository=repo)) as client:
+        CustomerService(repo.database).create_customer("Lata", "9866666666", customer_ref="CUST-DISP")
+        sid = client.post("/api/v1/sessions", json={"customer_ref": "CUST-DISP"}).json()["session_id"]
+        client.post(f"/api/v1/sessions/{sid}/messages", json={"text": "yes speaking"})
+        client.post(f"/api/v1/sessions/{sid}/messages", json={"text": "I want to talk to a human"})
+        call = [c for c in client.get("/api/calls").json() if c["sessionId"] == sid][0]
+        assert call["disposition"] == "ESCALATED"
+        assert client.get("/api/reports/overview").json()["outcomes14d"] == {"ESCALATED": 1}

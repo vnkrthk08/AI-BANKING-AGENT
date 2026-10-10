@@ -11,6 +11,15 @@ from kural.persistence.database import Database
 from kural.persistence.models import CallRecordRow, OperationsAuditEventRow, ReportScheduleRow
 
 
+# Earlier builds stored the final NLU intent of text sessions as the disposition.
+LEGACY_DISPOSITIONS = {
+    "WANTS_HUMAN": "ESCALATED", "FRAUD_REPORT": "ESCALATED", "UPDATE_FAILURE": "ESCALATED", "APP_UPDATE_ISSUE": "ESCALATED",
+    "CALLBACK": "CALLBACK_SCHEDULED", "BUSY": "CALLBACK_SCHEDULED", "OPT_OUT": "OPTED_OUT",
+    "UPDATE_SUCCESS": "CLOSED", "AFFIRM": "CLOSED", "NEGATE": "CLOSED", "APP_NOT_INSTALLED": "CLOSED",
+    "OUT_OF_SCOPE": "CLOSED", "ABUSE": "CLOSED", "LOW_CONFIDENCE": "CLOSED", "OTHER": "CLOSED",
+}
+
+
 class ReportService:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -71,7 +80,8 @@ class ReportService:
             outcomes: dict[str, int] = {}
             for c in calls:
                 if c.disposition:
-                    outcomes[c.disposition] = outcomes.get(c.disposition, 0) + 1
+                    key = LEGACY_DISPOSITIONS.get(c.disposition, c.disposition)
+                    outcomes[key] = outcomes.get(key, 0) + 1
             stale_cutoff = now - timedelta(hours=2)
             live_calls = s.scalar(select(func.count(CallRecordRow.call_id)).where(
                 CallRecordRow.status == "IN_PROGRESS", CallRecordRow.started_at >= stale_cutoff)) or 0

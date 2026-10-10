@@ -4,7 +4,7 @@ import { DownloadSimple, Phone, Plus, UploadSimple, UserList } from "@phosphor-i
 import { useApi } from "../hooks/useApi";
 import { useAuth } from "../auth/AuthContext";
 import { apiFetch, apiJson } from "../services/http";
-import { Badge, Drawer, Empty, ErrorNote, Loading, Modal, PageHead, Panel, Tabs, fmtDateTime, fmtDuration, titleCase } from "../components/ui";
+import { Badge, Drawer, outcomeLabel, Empty, ErrorNote, Loading, Modal, PageHead, Panel, Tabs, fmtDateTime, fmtDuration, titleCase } from "../components/ui";
 
 interface Call { id: string; sessionId: string; customerRef: string; maskedPhone: string; campaignName: string; language: string; startedAt: string; durationSec: number; disposition: string | null; status: string; channel: string; resolutionMode: string; escalationId: string | null; callbackId: string | null; recordingAvailable: boolean; kuralState: string; consented: boolean }
 interface Turn { id: string; speaker: string; text: string; time: string; redacted: boolean }
@@ -31,7 +31,7 @@ function CallDrawer({ call, onClose }: { call: Call; onClose: () => void }) {
   };
   return (
     <Drawer title={call.customerRef} sub={`${call.id} · ${fmtDateTime(call.startedAt)}`} onClose={onClose}>
-      <div className="actions"><Badge value={call.disposition ?? call.status} /><Badge value={call.channel} tone="" /><span className="badge plain">{fmtDuration(call.durationSec)}</span></div>
+      <div className="actions"><Badge value={call.disposition ?? call.status}>{outcomeLabel(call.disposition ?? call.status)}</Badge><Badge value={call.channel} tone="" /><span className="badge plain">{fmtDuration(call.durationSec)}</span></div>
       <dl className="kv">
         <dt>Phone</dt><dd className="num">{call.maskedPhone || "—"}</dd>
         <dt>Language</dt><dd>{call.language}</dd>
@@ -118,7 +118,7 @@ export function CallsHubPage() {
         <Panel flush>
           {tab === "history" && <div className="toolbar">
             <input className="input" placeholder="Search call ID or customer" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search calls" />
-            <select className="select" value={disp} onChange={(e) => setDisp(e.target.value)} aria-label="Filter by outcome"><option value="ALL">All outcomes</option>{dispositions.map((d) => <option key={d} value={d}>{titleCase(d)}</option>)}</select>
+            <select className="select" value={disp} onChange={(e) => setDisp(e.target.value)} aria-label="Filter by outcome"><option value="ALL">All outcomes</option>{dispositions.map((d) => <option key={d} value={d}>{outcomeLabel(d)}</option>)}</select>
           </div>}
           {error ? <div style={{ padding: 12 }}><ErrorNote error={error} onRetry={reload} /></div> : loading ? <Loading /> : (tab === "live" ? live : rows).length === 0 ? (
             <Empty icon={<Phone size={20} />} title={tab === "live" ? "No calls in progress" : calls.length ? "No calls match these filters" : "No calls yet"} text={tab === "live" ? "Active Voice Studio sessions and telephony calls appear here. Live listen-in is not available on this deployment." : "Calls are recorded here as soon as a Voice Studio session or campaign call starts."} />
@@ -128,7 +128,7 @@ export function CallsHubPage() {
                 <tr key={c.id} className="click" onClick={() => setOpen(c)} tabIndex={0} onKeyDown={(e) => e.key === "Enter" && setOpen(c)}>
                   <td className="primary-cell"><b>{c.customerRef}</b><span className="num">{c.maskedPhone || c.id}</span></td>
                   <td className="num">{fmtDateTime(c.startedAt)}</td><td>{titleCase(c.channel)}</td><td className="num">{fmtDuration(c.durationSec)}</td>
-                  <td><Badge value={c.disposition ?? c.status} /></td><td>{c.escalationId ? "Human follow-up" : "AI"}</td>
+                  <td><Badge value={c.disposition ?? c.status}>{outcomeLabel(c.disposition ?? c.status)}</Badge></td><td>{c.escalationId ? "Human follow-up" : "AI"}</td>
                 </tr>
               ))}
             </tbody></table></div>

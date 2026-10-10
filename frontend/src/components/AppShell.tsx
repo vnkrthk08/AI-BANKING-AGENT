@@ -1,14 +1,15 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Bell, ChartBar, Headset, List, Megaphone, Moon, Phone, ShieldCheck, SignOut, Sun, Tray, UsersThree } from "@phosphor-icons/react";
-import { ROLE_ACCESS, type RouteKey } from "../config/permissions";
+import { ROLE_ACCESS } from "../config/permissions";
+import { allowedHubs, type HubKey } from "../config/hubs";
 import { useRole } from "../hooks/useRole";
 import { useAuth } from "../auth/AuthContext";
 import { useApi } from "../hooks/useApi";
 import { apiJson } from "../services/http";
 import { fmtRelative } from "./ui";
 
-const NAV: { key: RouteKey; to: string; label: string; icon: ReactElement; group: string }[] = [
+const NAV: { key: HubKey; to: string; label: string; icon: ReactElement; group: string }[] = [
   { key: "executive", to: "/executive", label: "Overview", icon: <ChartBar size={18} />, group: "Operate" },
   { key: "test-console", to: "/test-console", label: "Voice Studio", icon: <Headset size={18} />, group: "Operate" },
   { key: "calls", to: "/calls", label: "Calls", icon: <Phone size={18} />, group: "Operate" },
@@ -47,7 +48,7 @@ function Inbox() {
         <Bell size={18} />{(data?.unread_count ?? 0) > 0 && <span className="dot" />}
       </button>
       {open && (
-        <div className="popover" role="dialog" aria-label="Notifications">
+        <div className="popover" role="dialog" aria-label="Notifications" onKeyDown={(e) => e.key === "Escape" && setOpen(false)}>
           <div className="popover-head"><span>Notifications</span>{(data?.unread_count ?? 0) > 0 && <button className="btn sm ghost" onClick={markAll}>Mark all read</button>}</div>
           {!data?.notifications.length && <div className="empty" style={{ padding: 28 }}><p>No notifications yet.</p></div>}
           {data?.notifications.map((n) => (
@@ -67,12 +68,13 @@ export function AppShell() {
   const [dark, setDark] = useState(() => { try { return localStorage.getItem("kural-theme") === "dark"; } catch { return false; } });
   useEffect(() => { document.documentElement.dataset.theme = dark ? "dark" : "light"; try { localStorage.setItem("kural-theme", dark ? "dark" : "light"); } catch { /* ignore */ } }, [dark]);
   useEffect(() => setNavOpen(false), [location.pathname]);
-  const allowed = ROLE_ACCESS[role].routes;
+  const allowed = allowedHubs(user?.permissions);
   const items = NAV.filter((n) => allowed.includes(n.key));
   const current = NAV.find((n) => location.pathname.startsWith(n.to));
   const initials = (user?.full_name || user?.username || "?").split(" ").map((p) => p[0]).join("").slice(0, 2).toUpperCase();
   return (
     <div className={`app ${navOpen ? "nav-open" : ""}`}>
+      <a className="skip-link" href="#main-content">Skip to content</a>
       <aside className="side" aria-label="Primary">
         <div className="side-brand"><span className="side-mark">K</span><div><b>KURAL AVA</b><small>Town Bank · Operations</small></div></div>
         {["Operate", "Manage", "Control"].map((g) => {
@@ -80,7 +82,7 @@ export function AppShell() {
           if (!group.length) return null;
           return <div key={g}><div className="side-label">{g}</div>{group.map((i) => <NavLink key={i.key} to={i.to} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>{i.icon}<span>{i.label}</span></NavLink>)}</div>;
         })}
-        <div className="side-foot"><span>{user?.branch}</span><span style={{ color: "#6f82a0" }}>All times IST</span></div>
+        <div className="side-foot"><span>{user?.branch}</span><span style={{ color: "#8495b3" }}>All times IST</span></div>
       </aside>
       <div className="main" onClick={() => navOpen && setNavOpen(false)}>
         <header className="topbar">
@@ -92,7 +94,7 @@ export function AppShell() {
           <div className="user"><span className="avatar">{initials}</span><div className="user-meta"><b>{user?.full_name || user?.username}</b><span>{ROLE_ACCESS[role].label}</span></div>
             <button className="icon-btn" aria-label="Sign out" title="Sign out" onClick={() => void logout()}><SignOut size={18} /></button></div>
         </header>
-        <main className="content"><Outlet /></main>
+        <main className="content" id="main-content" tabIndex={-1}><Outlet /></main>
       </div>
     </div>
   );

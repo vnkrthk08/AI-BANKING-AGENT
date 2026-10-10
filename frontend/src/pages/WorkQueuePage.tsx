@@ -85,6 +85,9 @@ function CallbackDrawer({ cb, onClose, onChanged }: { cb: CallbackRow; onClose: 
   const { busy, err, run } = useAction(onChanged);
   const [when, setWhen] = useState("");
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [outcome, setOutcome] = useState("COMPLETED");
+  const [notes, setNotes] = useState("");
+  const agents = useApi<{ agents: Agent[] }>(can("case:assign") ? "/api/agents" : null);
   const active = ["REQUESTED", "SCHEDULED", "DUE"].includes(cb.raw_status);
   return (
     <Drawer title={cb.customer_name ?? cb.customer_ref} sub={`${cb.id} · ${cb.maskedPhone}`} onClose={onClose}
@@ -104,6 +107,26 @@ function CallbackDrawer({ cb, onClose, onChanged }: { cb: CallbackRow; onClose: 
           <div className="actions"><input type="datetime-local" className="input" value={when} onChange={(e) => setWhen(e.target.value)} aria-label="New callback time" />
             <button className="btn primary" disabled={busy || !when} onClick={() => run(() => apiJson(`/api/callbacks/${cb.id}/reschedule`, { method: "POST", body: JSON.stringify({ preferredAt: new Date(when).toISOString() }) }))}>Save time</button></div>
           <p className="small muted">Calling window 09:00–19:00 IST, no Sundays or bank holidays. The previous time is invalidated.</p>
+        </section>
+      )}
+      {active && can("case:assign") && (
+        <section><h3 className="section-title">Owner</h3>
+          <select className="select" aria-label="Assign callback" value="" disabled={busy} onChange={(e) => e.target.value && run(() => apiJson(`/api/callbacks/${cb.id}/assign`, { method: "POST", body: JSON.stringify({ agent_id: e.target.value }) }))}>
+            <option value="">{cb.assigned_agent_name ? `Reassign (now ${cb.assigned_agent_name})…` : "Assign to…"}</option>
+            {agents.data?.agents.filter((a) => a.availability !== "OFFLINE").map((a) => <option key={a.id} value={a.id}>{a.name} · {titleCase(a.availability)}</option>)}
+          </select>
+        </section>
+      )}
+      {active && can("callback:manage") && (
+        <section><h3 className="section-title">Record call outcome</h3>
+          <p className="small muted" style={{ marginTop: 0 }}>Use after calling the customer yourself.</p>
+          <div className="actions">
+            <select className="select" aria-label="Call outcome" value={outcome} onChange={(e) => setOutcome(e.target.value)}>
+              {[["COMPLETED", "Spoke to customer"], ["BUSY", "Line busy"], ["NO_ANSWER", "Not answered"], ["WRONG_NUMBER", "Wrong number"], ["CUSTOMER_DECLINED", "Customer declined"], ["FAILED", "Could not connect"]].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </div>
+          <textarea className="input" style={{ marginTop: 8 }} aria-label="Outcome notes" placeholder="What happened? Do not record OTPs, PINs or card numbers." value={notes} onChange={(e) => setNotes(e.target.value)} />
+          <div style={{ marginTop: 8 }}><button className="btn primary" disabled={busy} onClick={() => run(() => apiJson(`/api/callbacks/${cb.id}/outcome`, { method: "POST", body: JSON.stringify({ outcome, notes }) }))}>Save outcome</button></div>
         </section>
       )}
       <section><h3 className="section-title">History</h3>
@@ -136,13 +159,13 @@ export function WorkQueuePage() {
   return (
     <>
       <PageHead title="Work Queue" sub="Escalated cases and customer callbacks waiting on people, ordered by SLA risk." />
-      <div className="kpis">
+      {cases.data && callbacks.data && <div className="kpis">
         <Kpi label="Open cases" value={openCases.length} />
         <Kpi label="Unassigned" value={openCases.filter((c) => !c.assigned_agent_id).length} tone={openCases.some((c) => !c.assigned_agent_id) ? "warn" : undefined} />
         <Kpi label="Past SLA" value={openCases.filter((c) => c.sla_breached).length} tone={openCases.some((c) => c.sla_breached) ? "alert" : undefined} />
         <Kpi label="Callbacks due" value={(callbacks.data ?? []).filter((c) => c.status === "DUE" || c.status === "OVERDUE").length} />
         <Kpi label="Need a time" value={(callbacks.data ?? []).filter((c) => c.status === "REQUESTED").length} />
-      </div>
+      </div>}
       <Tabs value={tab} onChange={(t) => setParams({ tab: t })} items={[{ key: "cases", label: "Cases", count: openCases.length }, { key: "callbacks", label: "Callbacks", count: cbs.length }]} />
       <Panel flush>
         <div className="toolbar">

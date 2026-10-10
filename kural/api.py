@@ -73,7 +73,7 @@ def submit_message(session_id: str, payload: TurnRequest, request: Request, prin
         if call_svc and getattr(turn, "ended", False):
             try:
                 call_svc.update_call_by_session(session_id, {
-                    "disposition": getattr(turn, "intent", None),
+                    "disposition": operational_disposition(turn),
                     "status": "COMPLETED",
                     "kural_state": getattr(turn, "state", None),
                     "callback_id": getattr(turn, "callback_id", None),
@@ -84,6 +84,18 @@ def submit_message(session_id: str, payload: TurnRequest, request: Request, prin
         return turn
     except KeyError as error:
         raise HTTPException(status_code=404, detail="Session not found") from error
+
+
+def operational_disposition(turn: Any) -> str:
+    """Map the final KURAL turn onto the operational outcome taxonomy used by dashboards."""
+    state = getattr(getattr(turn, "state", None), "value", str(getattr(turn, "state", "")))
+    if getattr(turn, "case_id", None) or state in ("HUMAN_ESCALATION", "FRAUD_ESCALATION"):
+        return "ESCALATED"
+    if getattr(turn, "callback_id", None):
+        return "CALLBACK_SCHEDULED"
+    if state == "OPT_OUT":
+        return "OPTED_OUT"
+    return "CLOSED"
 
 
 async def _process_voice_audio(
@@ -288,7 +300,7 @@ async def realtime_voice_call(websocket: WebSocket) -> None:
         try:
             await websocket.send_json({
                 "type": "voice_error",
-                "detail": "Voice service is unavailable right now. You can continue with typed chat.",
+                "detail": "Voice service is unavailable right now. The speech provider could not be reached; check its configuration and try again.",
                 "fatal": True,
             })
         except Exception:
@@ -438,6 +450,37 @@ async def post_reschedule_callback(callback_id: str, request: Request, principal
         raise HTTPException(status_code=422, detail=str(exc))
     except KeyError:
         raise HTTPException(status_code=404, detail="Callback not found")
+
+
+@router.post("/callbacks/{callback_id}/assign")
+@dashboard_router.post("/callbacks/{callback_id}/assign")
+async def post_assign_callback(callback_id: str, request: Request, principal: Principal = Depends(require("case:assign"))) -> dict[str, Any]:
+    body = await request.body()
+    data = json.loads(body) if body else {}
+    try:
+        return _callback_service(request).assign_callback(callback_id, data.get("agent_id") or None, actor=f"STAFF:{principal.actor}")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc).strip("'"))
+
+
+MANUAL_OUTCOMES = {"COMPLETED", "BUSY", "NO_ANSWER", "WRONG_NUMBER", "CUSTOMER_DECLINED", "FAILED"}
+
+
+@router.post("/callbacks/{callback_id}/outcome")
+@dashboard_router.post("/callbacks/{callback_id}/outcome")
+async def post_callback_outcome(callback_id: str, request: Request, principal: Principal = Depends(require("callback:manage"))) -> dict[str, Any]:
+    """Record the result of a callback a person dialled manually."""
+    body = await request.body()
+    data = json.loads(body) if body else {}
+    outcome = str(data.get("outcome", "")).upper()
+    if outcome not in MANUAL_OUTCOMES:
+        raise HTTPException(status_code=422, detail=f"outcome must be one of {sorted(MANUAL_OUTCOMES)}")
+    try:
+        return _callback_service(request).complete_callback(callback_id, outcome=outcome, notes=data.get("notes"), actor=f"STAFF:{principal.actor}")
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Callback not found")
+    except CallbackPolicyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.post("/callbacks/{callback_id}/cancel")

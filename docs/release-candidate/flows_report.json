@@ -1,0 +1,172 @@
+[
+  {
+    "check": "empty state /work",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "empty state /calls",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "empty state /campaigns",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "empty state /executive",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "overview outcome label",
+    "ok": true,
+    "detail": "operational category, not raw intent"
+  },
+  {
+    "check": "calls shows escalated call",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "skip link is first focus",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "case drawer opens via keyboard",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "focus moves into drawer",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "focus trapped in drawer",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "Escape closes drawer",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "case assigned via UI",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "note saved in history",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "case resolved via UI",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "callback assigned via UI",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "manual outcome persisted",
+    "ok": true,
+    "detail": "status=DUE"
+  },
+  {
+    "check": "failed e-mail shown as Failed",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "in-app shown as Delivered",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "retry re-queued delivery",
+    "ok": true,
+    "detail": "status after retry=QUEUED"
+  },
+  {
+    "check": "retried delivery honestly fails again (SMTP down)",
+    "ok": true,
+    "detail": "SMTP error: ConnectionRefusedError"
+  },
+  {
+    "check": "health shows database head",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "health shows SMTP configured",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "health shows voice not configured",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "compliance stopped dialing",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "compliance cannot resume",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "campaign page shows stop banner",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "compliance approved campaign",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "start disabled while preflight fails",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "ops resumed dialing",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "admin redirected away from Calls",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "admin API blocked from customers",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "agent nav limited",
+    "ok": true,
+    "detail": "K | KURAL AVA | Town Bank \u00b7 Operations | OPERATE | Overview | Voice Studio | Calls | Work Queue | MANAGE | Team | CONTROL | Governance | Head Office | All times IST"
+  },
+  {
+    "check": "dark theme applied",
+    "ok": true,
+    "detail": ""
+  },
+  {
+    "check": "no uncaught page errors",
+    "ok": true,
+    "detail": ""
+  }
+]

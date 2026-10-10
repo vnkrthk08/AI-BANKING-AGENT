@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { ChartBar, Headset } from "@phosphor-icons/react";
 import { useApi } from "../hooks/useApi";
 import { StatusLine } from "../components/AppShell";
-import { Badge, Empty, ErrorNote, Kpi, Loading, PageHead, Panel, fmtRelative, titleCase } from "../components/ui";
+import { Badge, Empty, ErrorNote, Kpi, Loading, PageHead, Panel, fmtRelative, outcomeLabel, titleCase } from "../components/ui";
 import { useAuth } from "../auth/AuthContext";
 
 interface Overview {
@@ -67,7 +67,7 @@ export function OverviewPage() {
         <Panel title="Outcomes" sub="Last 14 days">
           {outcomeTotal === 0 ? <p className="muted" style={{ margin: 0 }}>No completed calls yet.</p> : outcomes.map(([k, n]) => (
             <div key={k}>
-              <div className="legend-row"><span>{titleCase(k)}</span><span className="num muted">{n} · {Math.round((100 * n) / outcomeTotal)}%</span></div>
+              <div className="legend-row"><span>{outcomeLabel(k)}</span><span className="num muted">{n} · {Math.round((100 * n) / outcomeTotal)}%</span></div>
               <div className="meter"><i style={{ width: `${(100 * n) / outcomeTotal}%` }} /></div>
             </div>
           ))}

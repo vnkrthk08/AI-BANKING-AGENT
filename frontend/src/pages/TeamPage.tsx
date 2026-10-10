@@ -33,12 +33,12 @@ export function TeamPage() {
       {error && <ErrorNote error={error} onRetry={reload} />}
       {me && <Panel title="My availability" sub="New cases are only auto-assigned while you are Available"><div className="seg">{STATES.map((s) => <button key={s} className={me.availability === s ? "on" : ""} onClick={() => setAvail(me.id, s)}>{titleCase(s)}</button>)}</div></Panel>}
       {me && <div style={{ height: 16 }} />}
-      <div className="kpis">
+      {data && <div className="kpis">
         <Kpi label="Agents" value={agents.length} />
         <Kpi label="Available" value={agents.filter((a) => a.availability === "AVAILABLE").length} />
         <Kpi label="Open cases owned" value={agents.reduce((s, a) => s + a.openCases, 0)} />
         <Kpi label="Overdue" value={agents.reduce((s, a) => s + a.overdueCases, 0)} tone={agents.some((a) => a.overdueCases) ? "alert" : undefined} />
-      </div>
+      </div>}
       <Panel flush>
         {loading ? <Loading /> : !agents.length ? <Empty icon={<UsersThree size={20} />} title="No agents registered" text="Add the people who handle escalations and callbacks. Link them to a user account to give them a personal queue." /> : (
           <div className="table-wrap"><table className="t"><thead><tr><th>Agent</th><th>Availability</th><th>Workload</th><th>Handled today</th><th>Avg resolution</th><th>SLA met</th></tr></thead><tbody>

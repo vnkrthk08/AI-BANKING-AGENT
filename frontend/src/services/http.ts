@@ -1,6 +1,8 @@
 /** Authenticated HTTP client: in-memory access token, silent refresh via the HttpOnly cookie. */
 let accessToken: string | null = null;
 let refreshing: Promise<boolean> | null = null;
+/** Set when the last refresh attempt could not reach the API (as opposed to being rejected). */
+export let lastRefreshUnreachable = false;
 const listeners = new Set<() => void>();
 
 export function setAccessToken(token: string | null): void { accessToken = token; }
@@ -16,10 +18,11 @@ export async function refreshSession(): Promise<boolean> {
       method: "POST", credentials: "same-origin",
       headers: { "X-Refresh-Request-ID": crypto.randomUUID() },
     }).then(async (r) => {
+      lastRefreshUnreachable = r.status >= 500;
       if (!r.ok) return false;
       setAccessToken(((await r.json()) as { access_token: string }).access_token);
       return true;
-    }).catch(() => false).finally(() => { refreshing = null; });
+    }).catch(() => { lastRefreshUnreachable = true; return false; }).finally(() => { refreshing = null; });
   }
   return refreshing;
 }
@@ -28,6 +31,7 @@ async function detail(response: Response): Promise<string> {
   const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
   if (typeof body?.detail === "string") return body.detail;
   if (response.status === 403) return "Your role does not permit this action.";
+  if (response.status >= 500) return `The AVA backend is unavailable right now (HTTP ${response.status}). Check the API server and try again.`;
   return `Request failed (${response.status})`;
 }
 

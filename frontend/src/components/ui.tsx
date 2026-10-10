@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { X } from "@phosphor-icons/react";
 
 export function PageHead({ title, sub, actions }: { title: string; sub?: string; actions?: ReactNode }) {
@@ -29,6 +29,36 @@ const TONES: Record<string, string> = {
   ESCALATED: "warn", CALLBACK_SCHEDULED: "info", NO_RESPONSE: "warn", NO_ANSWER: "warn", OPTED_OUT: "",
 };
 
+/** Operational outcome wording shared by Overview, Calls and Campaigns. */
+export const OUTCOME_LABELS: Record<string, string> = {
+  CLOSED: "Resolved by AI", ESCALATED: "Escalated to staff", CALLBACK_SCHEDULED: "Callback booked",
+  NO_RESPONSE: "No response", OPTED_OUT: "Opted out", ABANDONED: "Customer hung up", COMPLETED: "Call completed",
+  BUSY: "Line busy", NO_ANSWER: "Not answered", FAILED: "Call failed", DND: "Blocked (DND)", NOT_INTERESTED: "Not interested",
+  IN_PROGRESS: "In progress", DIALING: "Dialling", CANCELLED: "Cancelled",
+};
+export function outcomeLabel(v?: string | null): string { return v ? OUTCOME_LABELS[v.toUpperCase()] ?? titleCase(v) : "—"; }
+
+/** Move focus into a dialog, trap Tab inside it, close on Escape and restore focus on unmount. */
+function useDialogFocus(onClose: () => void) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    const node = ref.current;
+    const focusables = () => Array.from(node?.querySelectorAll<HTMLElement>('button:not([disabled]),[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])') ?? []);
+    (node?.querySelector<HTMLElement>("[data-autofocus]") ?? focusables()[0])?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.stopPropagation(); onClose(); return; }
+      if (e.key !== "Tab") return;
+      const f = focusables(); if (!f.length) return;
+      if (e.shiftKey && document.activeElement === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
+      else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
+    };
+    node?.addEventListener("keydown", onKey);
+    return () => { node?.removeEventListener("keydown", onKey); previous?.focus?.(); };
+  }, [onClose]);
+  return ref;
+}
+
 export function Badge({ value, tone, children }: { value?: string | null; tone?: string; children?: ReactNode }) {
   const key = (value ?? "").toUpperCase();
   const label = children ?? (value ? value.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase()) : "—");
@@ -48,15 +78,11 @@ export function ErrorNote({ error, onRetry }: { error: string; onRetry?: () => v
 }
 
 export function Drawer({ title, sub, onClose, children, footer }: { title: ReactNode; sub?: ReactNode; onClose: () => void; children: ReactNode; footer?: ReactNode }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const ref = useDialogFocus(onClose);
   return (
     <div className="scrim" onClick={onClose}>
-      <aside className="drawer" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-        <div className="drawer-head"><div><h2>{title}</h2>{sub && <p>{sub}</p>}</div><button className="icon-btn" aria-label="Close" onClick={onClose}><X size={18} /></button></div>
+      <aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" ref={ref} onClick={(e) => e.stopPropagation()}>
+        <div className="drawer-head"><div><h2 id="drawer-title">{title}</h2>{sub && <p>{sub}</p>}</div><button className="icon-btn" aria-label="Close" onClick={onClose}><X size={18} /></button></div>
         <div className="drawer-body">{children}</div>
         {footer && <div className="drawer-foot">{footer}</div>}
       </aside>
@@ -65,9 +91,10 @@ export function Drawer({ title, sub, onClose, children, footer }: { title: React
 }
 
 export function Modal({ title, onClose, children, footer }: { title: string; onClose: () => void; children: ReactNode; footer: ReactNode }) {
+  const ref = useDialogFocus(onClose);
   return (
     <div className="modal-wrap" onClick={onClose}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label={title} onClick={(e) => e.stopPropagation()}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label={title} ref={ref} onClick={(e) => e.stopPropagation()}>
         <h2>{title}</h2><div className="body">{children}</div><div className="foot">{footer}</div>
       </div>
     </div>
