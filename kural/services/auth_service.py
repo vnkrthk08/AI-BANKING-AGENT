@@ -124,6 +124,22 @@ class AuthService:
             revocation_cache.invalidate_user(user.id, user.token_version)
             return self._public_user(user)
 
+    def delete_user(self, user_id: str) -> bool:
+        """Permanently delete a user account, revoke sessions, and unlink agent profile."""
+        with self.db.session() as s:
+            user = s.get(UserRow, user_id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            revocation_cache.invalidate_user(user.id, user.token_version + 100)
+            from kural.persistence.models import AgentRow
+            linked_agent = s.scalar(select(AgentRow).where(AgentRow.user_id == user_id))
+            if linked_agent:
+                s.delete(linked_agent)
+            s.execute(update(RefreshTokenRow).where(RefreshTokenRow.user_id == user_id).values(status="REVOKED"))
+            s.delete(user)
+            s.commit()
+            return True
+
     def authenticate_user(self, username: str, password: str) -> Dict[str, Any]:
         """Verify user credentials and return user record."""
         with self.db.session() as s:

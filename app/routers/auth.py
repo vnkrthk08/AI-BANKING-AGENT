@@ -35,7 +35,7 @@ class WsTicketRequest(BaseModel):
 class UserCreateRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     email: str = Field(min_length=3, max_length=255)
-    password: str = Field(min_length=12, max_length=256)
+    password: str = Field(min_length=8, max_length=256)
     full_name: str = Field(min_length=1, max_length=128)
     role: str
     branch: str = Field(default="Head Office", max_length=80)
@@ -225,6 +225,25 @@ def create_user(
         username=req.username, email=req.email, password=req.password,
         full_name=req.full_name, role=req.role, branch=req.branch, phone=req.phone,
     )
+    if req.role == "AGENT":
+        db = getattr(request.app.state, "database", None)
+        if db:
+            from kural.persistence.models import AgentRow
+            with db.session() as s:
+                agent_id = f"AGT-{req.username.upper()}"
+                if not s.get(AgentRow, agent_id):
+                    s.add(AgentRow(
+                        agent_id=agent_id,
+                        name=req.full_name,
+                        team=req.branch or "Customer Operations",
+                        languages_json=["Hindi", "English", "Tamil"],
+                        skills_json=["APP_SUPPORT", "GENERAL_SUPPORT", "KYC"],
+                        availability="AVAILABLE",
+                        user_id=user["id"],
+                        email=req.email,
+                        phone=req.phone,
+                    ))
+                    s.commit()
     _audit(request, "USER_CREATED", principal.actor, principal.role, user["id"], f"role={req.role}")
     return user
 
@@ -241,6 +260,27 @@ def deactivate_user(
     result = auth_svc.set_active(user_id, False)
     _audit(request, "USER_DEACTIVATED", principal.actor, principal.role, user_id)
     return result
+
+
+@auth_router.delete("/users/{user_id}")
+def delete_user_endpoint(
+    user_id: str,
+    request: Request,
+    principal: Principal = Depends(require("user:manage")),
+    auth_svc: AuthService = Depends(get_auth_service),
+) -> Dict[str, Any]:
+    """Permanently delete a user account and revoke active sessions (Super Admin only)."""
+    if user_id == principal.user_id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+    target = auth_svc.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target["username"].lower() == "admin":
+        raise HTTPException(status_code=400, detail="The root Super Administrator account cannot be deleted")
+
+    auth_svc.delete_user(user_id)
+    _audit(request, "USER_DELETED", principal.actor, principal.role, user_id, f"username={target['username']}")
+    return {"deleted": True, "user_id": user_id, "username": target["username"]}
 
 
 class ImpersonateRequest(BaseModel):

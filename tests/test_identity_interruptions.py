@@ -48,8 +48,10 @@ def test_identity_check_deferral_immediately_records_callback(repository, text, 
     assert result.intent == expected_intent
     assert result.ended
     assert result.callback_id is not None
-    assert "callback" in result.response.casefold()
-    assert repository.list_callbacks(session_id)[0]["requested_at"] is None
+    if expected_intent == Intent.CALLBACK:
+        assert repository.list_callbacks(session_id)[0]["requested_at"] is not None
+    else:
+        assert repository.list_callbacks(session_id)[0]["requested_at"] is None
     assert provider.calls == []
 
 

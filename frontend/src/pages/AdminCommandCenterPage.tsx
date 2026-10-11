@@ -6,10 +6,12 @@ import {
   Eye,
   Lock,
   MagnifyingGlass,
+  Plus,
   ShieldCheck,
   SlidersHorizontal,
   Trash,
   UsersThree,
+  X,
 } from "@phosphor-icons/react";
 import { useAuth } from "../auth/AuthContext";
 import { useApi } from "../hooks/useApi";
@@ -104,6 +106,24 @@ export function AdminCommandCenterPage() {
   const [seeding, setSeeding] = useState(false);
   const [resetting, setResetting] = useState(false);
 
+  // User Creation Modal State
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createForm, setCreateForm] = useState({
+    username: "",
+    full_name: "",
+    email: "",
+    password: "Kural-Pass-2026!",
+    role: "AGENT",
+    branch: "Mumbai Metro",
+    phone: "",
+  });
+
+  // User Deletion Confirmation State
+  const [deleteTarget, setDeleteTarget] = useState<DirectoryUser | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
   const users = data?.users || [];
 
   const filteredUsers = users.filter((u) => {
@@ -186,6 +206,66 @@ export function AdminCommandCenterPage() {
       toast.bad("Reset Failed", err instanceof Error ? err.message : "Unable to reset demo data");
     } finally {
       setResetting(false);
+    }
+  };
+
+  const handleCreateUserSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCreateBusy(true);
+    setCreateError(null);
+    try {
+      const payload = {
+        username: createForm.username.trim(),
+        full_name: createForm.full_name.trim(),
+        email: createForm.email.trim(),
+        password: createForm.password,
+        role: createForm.role,
+        branch: createForm.branch.trim() || "Head Office",
+        phone: createForm.phone.trim() || undefined,
+      };
+      await apiJson("/api/v1/auth/users", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      toast.ok(
+        "User Created Successfully",
+        `Created @${payload.username} (${payload.role}) in ${payload.branch}`
+      );
+      setCreateModalOpen(false);
+      setCreateForm({
+        username: "",
+        full_name: "",
+        email: "",
+        password: "Kural-Pass-2026!",
+        role: "AGENT",
+        branch: "Mumbai Metro",
+        phone: "",
+      });
+      await reload();
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : "Failed to create user account");
+    } finally {
+      setCreateBusy(false);
+    }
+  };
+
+  const handleDeleteUserConfirm = async () => {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    try {
+      await apiJson(`/api/v1/auth/users/${deleteTarget.id}`, {
+        method: "DELETE",
+      });
+      toast.ok(
+        "User Deleted",
+        `User account @${deleteTarget.username} (${deleteTarget.full_name}) was permanently deleted.`
+      );
+      setDeleteTarget(null);
+      await reload();
+    } catch (err) {
+      toast.bad("Delete Failed", err instanceof Error ? err.message : "Unable to delete user");
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -321,6 +401,18 @@ export function AdminCommandCenterPage() {
                 )
               )}
             </div>
+
+            <button
+              className="btn primary create-account-btn"
+              onClick={() => {
+                setCreateError(null);
+                setCreateModalOpen(true);
+              }}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: "auto", flexShrink: 0 }}
+            >
+              <Plus size={15} weight="bold" />
+              <span>Create Account</span>
+            </button>
           </div>
 
           {loading ? (
@@ -427,20 +519,32 @@ export function AdminCommandCenterPage() {
                         <span className="status-text">{u.availability || "ACTIVE"}</span>
                       </div>
 
-                      {isCurrentUser ? (
-                        <button className="btn sm secondary current-btn" disabled>
-                          <CheckCircle size={14} weight="fill" /> Active Session
-                        </button>
-                      ) : (
-                        <button
-                          className="btn sm primary switch-btn"
-                          disabled={switching === u.username}
-                          onClick={() => handleSwitchUser(u.username)}
-                        >
-                          <Eye size={14} />
-                          {switching === u.username ? "Switching…" : `Switch to ${u.username}`}
-                        </button>
-                      )}
+                      <div className="card-actions-group" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        {!isCurrentUser && u.username.toLowerCase() !== "admin" && (
+                          <button
+                            className="btn sm danger delete-user-btn"
+                            title={`Delete account @${u.username}`}
+                            onClick={() => setDeleteTarget(u)}
+                            style={{ padding: "0 8px", color: "var(--bad)" }}
+                          >
+                            <Trash size={14} />
+                          </button>
+                        )}
+                        {isCurrentUser ? (
+                          <button className="btn sm secondary current-btn" disabled>
+                            <CheckCircle size={14} weight="fill" /> Active Session
+                          </button>
+                        ) : (
+                          <button
+                            className="btn sm primary switch-btn"
+                            disabled={switching === u.username}
+                            onClick={() => handleSwitchUser(u.username)}
+                          >
+                            <Eye size={14} />
+                            {switching === u.username ? "Switching…" : `Switch to ${u.username}`}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
@@ -569,6 +673,224 @@ export function AdminCommandCenterPage() {
                   Internal and external auditors possess cryptographic read-only privileges across consent ledgers and transcripts, preventing tampering with historical bank records.
                 </p>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Create New User Account */}
+      {createModalOpen && (
+        <div className="modal-wrap" role="dialog" aria-modal="true" aria-labelledby="create-modal-title">
+          <div className="modal create-user-modal" style={{ width: "min(560px, 100%)", maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
+            <div className="modal-head" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 24px", borderBottom: "1px solid var(--line)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ width: 32, height: 32, borderRadius: 8, background: "var(--brand-soft)", color: "var(--brand-2)", display: "grid", placeItems: "center" }}>
+                  <Plus size={18} weight="bold" />
+                </span>
+                <div>
+                  <h2 id="create-modal-title" style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>Provision Staff Account</h2>
+                  <small style={{ color: "var(--text-3)", fontSize: 12 }}>Create a new banking operations operator with RBAC role</small>
+                </div>
+              </div>
+              <button
+                className="icon-btn"
+                aria-label="Close modal"
+                onClick={() => setCreateModalOpen(false)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateUserSubmit} style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", margin: 0 }}>
+              <div className="modal-body" style={{ padding: "20px 24px", overflowY: "auto", display: "grid", gap: 14 }}>
+                {createError && (
+                  <div className="alert-bad" style={{ padding: "10px 14px", borderRadius: 8, background: "var(--bad-soft)", color: "var(--bad)", fontSize: 13, border: "1px solid var(--bad)" }}>
+                    {createError}
+                  </div>
+                )}
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div className="field" style={{ margin: 0 }}>
+                    <label>Username *</label>
+                    <input
+                      type="text"
+                      className="input"
+                      placeholder="e.g. agent2 or ops_lead"
+                      required
+                      value={createForm.username}
+                      onChange={(e) => setCreateForm({ ...createForm, username: e.target.value })}
+                    />
+                    <small>Lowercase alphanumeric, 3–64 chars</small>
+                  </div>
+
+                  <div className="field" style={{ margin: 0 }}>
+                    <label>Full Name *</label>
+                    <input
+                      type="text"
+                      className="input"
+                      placeholder="e.g. Rajesh Sharma"
+                      required
+                      value={createForm.full_name}
+                      onChange={(e) => setCreateForm({ ...createForm, full_name: e.target.value })}
+                    />
+                    <small>Official staff legal name</small>
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div className="field" style={{ margin: 0 }}>
+                    <label>Corporate Email *</label>
+                    <input
+                      type="email"
+                      className="input"
+                      placeholder="staff@kural.bank"
+                      required
+                      value={createForm.email}
+                      onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })}
+                    />
+                  </div>
+
+                  <div className="field" style={{ margin: 0 }}>
+                    <label>Banking Role *</label>
+                    <select
+                      className="select"
+                      value={createForm.role}
+                      onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}
+                    >
+                      <option value="AGENT">AGENT (Customer Representative)</option>
+                      <option value="SUPERVISOR">SUPERVISOR (Shift Lead & QA)</option>
+                      <option value="OPS_MANAGER">OPS_MANAGER (Campaign Operations)</option>
+                      <option value="COMPLIANCE_OFFICER">COMPLIANCE_OFFICER (Maker-Checker)</option>
+                      <option value="AUDITOR">AUDITOR (Read-Only Audit)</option>
+                      <option value="SYSTEM_ADMIN">SYSTEM_ADMIN (Zero-PII Admin)</option>
+                      <option value="SUPER_ADMIN">SUPER_ADMIN (Platform Executive)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div className="field" style={{ margin: 0 }}>
+                    <label>Branch / Office</label>
+                    <input
+                      type="text"
+                      className="input"
+                      placeholder="e.g. Mumbai Metro"
+                      value={createForm.branch}
+                      onChange={(e) => setCreateForm({ ...createForm, branch: e.target.value })}
+                    />
+                  </div>
+
+                  <div className="field" style={{ margin: 0 }}>
+                    <label>Contact Phone (Optional)</label>
+                    <input
+                      type="text"
+                      className="input"
+                      placeholder="+91 98765 43210"
+                      value={createForm.phone}
+                      onChange={(e) => setCreateForm({ ...createForm, phone: e.target.value })}
+                    />
+                  </div>
+                </div>
+
+                <div className="field" style={{ margin: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <label>Account Password *</label>
+                    <button
+                      type="button"
+                      className="btn sm ghost"
+                      style={{ fontSize: 11, padding: "0 6px" }}
+                      onClick={() => setCreateForm({ ...createForm, password: `Pass-${Math.floor(1000 + Math.random() * 9000)}-2026!` })}
+                    >
+                      Generate Demo Pass
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    className="input"
+                    required
+                    value={createForm.password}
+                    onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
+                  />
+                  <small>Bank security standard (minimum 8 characters)</small>
+                </div>
+              </div>
+
+              <div className="modal-foot" style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "16px 24px", borderTop: "1px solid var(--line)", background: "var(--surface-2)" }}>
+                <button
+                  type="button"
+                  className="btn secondary"
+                  disabled={createBusy}
+                  onClick={() => setCreateModalOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn primary"
+                  disabled={createBusy || !createForm.username || !createForm.full_name || !createForm.email}
+                >
+                  {createBusy ? "Provisioning…" : "Provision Account"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Delete User Confirmation */}
+      {deleteTarget && (
+        <div className="modal-wrap" role="dialog" aria-modal="true" aria-labelledby="delete-modal-title">
+          <div className="modal delete-user-modal" style={{ width: "min(460px, 100%)" }}>
+            <div className="modal-head" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 20px", borderBottom: "1px solid var(--line)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ width: 32, height: 32, borderRadius: 8, background: "var(--bad-soft)", color: "var(--bad)", display: "grid", placeItems: "center" }}>
+                  <Trash size={18} />
+                </span>
+                <h2 id="delete-modal-title" style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "var(--bad)" }}>
+                  Delete Staff Account
+                </h2>
+              </div>
+              <button
+                className="icon-btn"
+                aria-label="Close modal"
+                disabled={deleteBusy}
+                onClick={() => setDeleteTarget(null)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="modal-body" style={{ padding: "18px 20px", display: "grid", gap: 12 }}>
+              <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.5, color: "var(--text)" }}>
+                Are you sure you want to permanently delete account <strong>@{deleteTarget.username}</strong> ({deleteTarget.full_name})?
+              </p>
+              <div style={{ padding: "10px 14px", borderRadius: 8, background: "var(--surface-2)", border: "1px solid var(--line)", fontSize: 12.5, display: "grid", gap: 4 }}>
+                <div><strong>Role:</strong> {deleteTarget.role}</div>
+                <div><strong>Email:</strong> {deleteTarget.email}</div>
+                <div><strong>Branch:</strong> {deleteTarget.branch}</div>
+              </div>
+              <p style={{ margin: 0, fontSize: 12, color: "var(--bad)" }}>
+                ⚠ Warning: This will immediately invalidate all active sessions, purge agent assignments, and revoke access to KURAL AVA operations.
+              </p>
+            </div>
+
+            <div className="modal-foot" style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 20px", borderTop: "1px solid var(--line)", background: "var(--surface-2)" }}>
+              <button
+                type="button"
+                className="btn secondary"
+                disabled={deleteBusy}
+                onClick={() => setDeleteTarget(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn danger"
+                disabled={deleteBusy}
+                onClick={handleDeleteUserConfirm}
+              >
+                {deleteBusy ? "Deleting…" : "Confirm Delete"}
+              </button>
             </div>
           </div>
         </div>
