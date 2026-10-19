@@ -40,6 +40,24 @@ DISCARD_NOISE_TOKENS = {
     "subbu", "town bank",
 }
 
+DISCARD_HALLUCINATIONS = {
+    "thanks, wonderful", "thanks wonderful", "thank you", "thanks", "thank you very much",
+    "thank you for watching", "thanks for watching", "thank you so much",
+    "however", "furthermore", "moreover", "subtitles by", "subtitled by", "amara.org",
+    "watching", "bye", "goodbye", "thank you.", "thanks.",
+}
+
+
+def is_spurious_hallucination(text_lower: str, turn_sequence: int = 0) -> bool:
+    """Detect if text is a known neural ASR hallucination on silence or background hiss."""
+    if text_lower in DISCARD_HALLUCINATIONS:
+        return True
+    if any(phrase in text_lower for phrase in ("subtitles by", "amara.org", "thanks for watching", "thank you for watching")):
+        return True
+    if turn_sequence == 0 and text_lower in {"bye", "goodbye", "thanks", "thank you"}:
+        return True
+    return False
+
 LEGITIMATE_SHORT_REPLIES = {
     "yes", "no", "ok", "okay", "yep", "nope", "hi", "hey",
     "stop", "sure", "fine", "correct", "myself", "speaking",
@@ -313,7 +331,7 @@ class RealtimeVoiceOrchestrator:
             clean = partial.strip(" .,!?;:-_")
             clean_lower = clean.lower()
 
-            if clean_lower in DISCARD_NOISE_TOKENS:
+            if clean_lower in DISCARD_NOISE_TOKENS or is_spurious_hallucination(clean_lower, self._turn_sequence):
                 self._latest_partial_transcript = ""
                 return
             if len(clean) < 2 and clean_lower not in LEGITIMATE_SHORT_REPLIES:
@@ -534,7 +552,13 @@ class RealtimeVoiceOrchestrator:
 
     async def _read_sarvam(self, call_started: float) -> None:
         while not self._closed.is_set():
-            event = await self.stt.receive_event()
+            try:
+                event = await self.stt.receive_event()
+            except Exception as exc:
+                if self._closed.is_set():
+                    return
+                logger.warning("Realtime STT socket ended session=%s: %s", self._session_id, exc)
+                return
             event_name = getattr(event, "event", None)
             if event_name in {"vad.speech_start", "speech_start"}:
                 self._speech_started_at = time.perf_counter()
@@ -571,9 +595,9 @@ class RealtimeVoiceOrchestrator:
                 clean = transcript.strip(" .,!?;:-_")
                 clean_lower = clean.lower()
 
-                # 1. Reject noise, fillers, single-character hallucinations
-                if clean_lower in DISCARD_NOISE_TOKENS:
-                    logger.info("Discarding noise/filler token session=%s", self._session_id)
+                # 1. Reject noise, fillers, single-character hallucinations, or neural ASR silence phantoms
+                if clean_lower in DISCARD_NOISE_TOKENS or is_spurious_hallucination(clean_lower, self._turn_sequence):
+                    logger.info("Discarding noise/filler/hallucination token session=%s: %r", self._session_id, clean)
                     if not self._speech_active and self._silence_state == "IDLE" and not (self._is_assistant_speaking or self._is_client_playing):
                         self._arm_silence_timer(call_started)
                     continue

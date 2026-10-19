@@ -709,13 +709,6 @@ export function TestConsolePage() {
         setAudioEnergy(energy);
         setAudioDb(db);
 
-        // Natural client-side barge-in: If user speaks (>20% energy) while Subbu is actively playing audio
-        if (energy > 20 && playingSourcesRef.current.size > 0) {
-          stopPlayback();
-          voiceConnectionRef.current?.sendPlaybackStatus("idle");
-          setVoiceState("LISTENING");
-        }
-
         animFrameRef.current = requestAnimationFrame(monitorEnergy);
       };
       animFrameRef.current = requestAnimationFrame(monitorEnergy);

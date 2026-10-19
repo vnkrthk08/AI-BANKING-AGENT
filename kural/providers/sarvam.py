@@ -62,13 +62,15 @@ class SarvamRealtimeSTTSession:
 
     def __init__(self, websocket: Any) -> None:
         self._websocket = websocket
+        self._send_lock = asyncio.Lock()
 
     async def send_audio(self, pcm16_mono: bytes) -> None:
         from sarvamai import RealtimeAudioInput
 
-        await self._websocket.send_realtime_audio_input(
-            RealtimeAudioInput(audio=base64.b64encode(pcm16_mono).decode("ascii")),
-        )
+        async with self._send_lock:
+            await self._websocket.send_realtime_audio_input(
+                RealtimeAudioInput(audio=base64.b64encode(pcm16_mono).decode("ascii")),
+            )
 
     async def receive_event(self) -> Any:
         return await self._websocket.recv()
@@ -76,14 +78,16 @@ class SarvamRealtimeSTTSession:
     async def end(self) -> None:
         from sarvamai import RealtimeEnd
 
-        await self._websocket.send_realtime_end(RealtimeEnd())
+        async with self._send_lock:
+            await self._websocket.send_realtime_end(RealtimeEnd())
 
     async def flush(self) -> None:
         flush_fn = getattr(self._websocket, "send_realtime_flush", None)
         if callable(flush_fn):
             try:
                 from sarvamai import RealtimeFlush
-                await flush_fn(RealtimeFlush())
+                async with self._send_lock:
+                    await flush_fn(RealtimeFlush())
             except Exception:
                 pass
 

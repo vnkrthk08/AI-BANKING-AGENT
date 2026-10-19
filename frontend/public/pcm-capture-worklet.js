@@ -41,17 +41,23 @@ class KuralPcmCaptureProcessor extends AudioWorkletProcessor {
       }
       const rms = Math.sqrt(sumSq / 320);
 
-      // Acoustic Gating: when assistant is actively speaking through device speakers,
-      // attenuate speaker leakage (RMS < 0.015) while preserving user speech and barge-in (RMS >= 0.015)
-      const isLeakingSpeaker = this.isSpeaking && (isNaN(rms) || rms < 0.015);
+      // Acoustic Gating & Silence Suppression:
+      // 1. While assistant is actively speaking (this.isSpeaking):
+      //    Suppress microphone frames to eliminate speaker feedback into STT,
+      //    unless user is deliberately and loudly barging in (RMS >= 0.22).
+      // 2. When listening in silence/ambient room noise (RMS < 0.005):
+      //    Suppress transmission so pure silence is not streamed into neural ASR models (Whisper/Saaras),
+      //    preventing phantom hallucinated transcripts ("Thanks, wonderful", "However").
+      const isNoiseOrSilence = isNaN(rms) || rms < 0.005;
+      const isAcousticLeakage = this.isSpeaking && rms < 0.22;
+      if (isNoiseOrSilence || isAcousticLeakage) {
+        continue;
+      }
+
       const pcm = new Int16Array(320);
-      if (isLeakingSpeaker) {
-        for (let i = 0; i < 320; i += 1) pcm[i] = 0;
-      } else {
-        for (let i = 0; i < 320; i += 1) {
-          const s = Number.isFinite(frame[i]) ? frame[i] : 0;
-          pcm[i] = Math.round(s * (s < 0 ? 32768 : 32767));
-        }
+      for (let i = 0; i < 320; i += 1) {
+        const s = Number.isFinite(frame[i]) ? frame[i] : 0;
+        pcm[i] = Math.round(s * (s < 0 ? 32768 : 32767));
       }
       this.port.postMessage(pcm.buffer, [pcm.buffer]);
     }
