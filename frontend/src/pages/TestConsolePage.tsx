@@ -441,6 +441,10 @@ export function TestConsolePage() {
       }
 
       case "transcript_partial":
+        if (message.preview_suppressed) {
+          setPartialText("");
+          break;
+        }
         if (!callEndingPendingRef.current) {
           setPartialText(String(message.text ?? ""));
           setVoiceState("LISTENING");

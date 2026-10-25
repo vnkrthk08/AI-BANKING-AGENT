@@ -135,7 +135,10 @@ class SarvamRealtimeSTTAdapter:
             sample_rate="16000",
             threshold=self.threshold,
             prefix_padding_ms="300",
-            silence_duration_ms="600",
+            # A short VAD endpoint keeps conversational turns responsive. Final
+            # transcripts still come from Saaras; the orchestrator never decides
+            # a turn from a mutable partial hypothesis.
+            silence_duration_ms=os.getenv("SARVAM_VAD_SILENCE_DURATION_MS", "350"),
             min_speech_duration_ms=self.min_speech_duration_ms,
             request_options={"max_retries": 0},
         ) as websocket:
