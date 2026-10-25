@@ -55,6 +55,7 @@ frontend/.env.local
 
 # Audio & Temporary Artifacts
 artifacts/
+/outputs/
 *.wav
 !frontend/public/samples/*.wav
 

@@ -23,7 +23,7 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
-from kural.conversation.engine import KuralEngine
+from kural.conversation.engine import KuralEngine, SECURITY_CLOSING_NOTE
 from kural.models import Intent
 from kural.privacy.transcript import safe_transcript
 from kural.repositories import KuralRepository
@@ -51,6 +51,10 @@ DISCARD_HALLUCINATIONS = {
 def is_spurious_hallucination(text_lower: str, turn_sequence: int = 0) -> bool:
     """Detect if text is a known neural ASR hallucination on silence or background hiss."""
     if text_lower in DISCARD_HALLUCINATIONS:
+        return True
+    normalized_text = " ".join(re.findall(r"[a-z0-9]+", text_lower))
+    if normalized_text.startswith("however even if you want to learn"):
+        # Observed Saaras silence hallucination from the browser voice demo.
         return True
     if any(phrase in text_lower for phrase in ("subtitles by", "amara.org", "thanks for watching", "thank you for watching")):
         return True
@@ -142,7 +146,6 @@ class RealtimeVoiceOrchestrator:
         self._reminder_count = 0
         self._speech_active = False
         self._latest_partial_transcript = ""
-        self._last_speech_activity_at = 0.0
         self._turn_sequence = 0
         self._first_pcm_at: float | None = None
         self._speech_started_at: float | None = None
@@ -200,13 +203,18 @@ class RealtimeVoiceOrchestrator:
     def _get_silence_closing_text(self) -> str:
         env_override = os.getenv("KURAL_SILENCE_CLOSING_TEXT")
         if env_override:
-            return env_override
-        pref_lang = self._get_customer_language()
-        if pref_lang.lower().startswith("hi"):
-            return "Aapka koi jawaab nahi milne ke karan main call samapt kar raha hoon. KURAL Bank mein call karne ke liye dhanyavad. Namaste."
-        if pref_lang.lower().startswith("ta"):
-            return "Ungalidamirundhu pathil illathathaal intha azhaippai mudikkiren. KURAL Bank-il azhaithatharku nandri. Vanakkam."
-        return "I haven't heard a response, so I'll end the call now. Thank you for your time. Goodbye."
+            closing = env_override
+        else:
+            pref_lang = self._get_customer_language()
+            if pref_lang.lower().startswith("hi"):
+                closing = "Aapka koi jawaab nahi milne ke karan main call samapt kar raha hoon. KURAL Bank mein call karne ke liye dhanyavad. Namaste."
+            elif pref_lang.lower().startswith("ta"):
+                closing = "Ungalidamirundhu pathil illathathaal intha azhaippai mudikkiren. KURAL Bank-il azhaithatharku nandri. Vanakkam."
+            else:
+                closing = "I haven't heard a response, so I'll end the call now. Thank you for your time. Goodbye."
+        if SECURITY_CLOSING_NOTE.casefold() not in closing.casefold():
+            closing = f"{closing.rstrip()} {SECURITY_CLOSING_NOTE}"
+        return closing
 
     def _cancel_silence_timer(self) -> None:
         if self._silence_timer_task is not None and not self._silence_timer_task.done():
@@ -214,6 +222,24 @@ class RealtimeVoiceOrchestrator:
             self._silence_timer_task = None
         if self._silence_state not in ("CLOSING", "TERMINATING"):
             self._silence_state = "IDLE"
+
+    def _cancel_turn_finalizer(self) -> None:
+        if self._turn_finalizer_task is not None and not self._turn_finalizer_task.done():
+            self._turn_finalizer_task.cancel()
+        self._turn_finalizer_task = None
+
+    def _schedule_turn_finalizer(self, call_started: float, debounce_sec: float | None = None) -> None:
+        """Expire interim display text after a pause; never promote it to a turn."""
+        self._cancel_turn_finalizer()
+        delay = debounce_sec if debounce_sec is not None else self.turn_silence_window_sec
+        self._turn_finalizer_task = asyncio.create_task(self._partial_expiry_worker(delay))
+
+    async def _partial_expiry_worker(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            self._latest_partial_transcript = ""
+        except asyncio.CancelledError:
+            pass
 
     def _arm_silence_timer(self, call_started: float) -> None:
         if self._closed.is_set() or self._is_assistant_speaking or self._is_client_playing or self._speech_active:
@@ -248,7 +274,7 @@ class RealtimeVoiceOrchestrator:
             await asyncio.sleep(self.silence_timeout_sec)
             if self._closed.is_set():
                 return
-            if self._speech_active or bool(self._latest_partial_transcript.strip()):
+            if self._speech_active:
                 logger.info("Customer speech active session=%s; deferring silence timeout", self._session_id)
                 return
             if self._is_assistant_speaking or self._is_client_playing:
@@ -308,62 +334,6 @@ class RealtimeVoiceOrchestrator:
             pass
         except Exception as exc:
             logger.warning("Silence timeout worker error session=%s: %s", self._session_id, exc)
-
-    def _cancel_turn_finalizer(self) -> None:
-        if self._turn_finalizer_task is not None and not self._turn_finalizer_task.done():
-            self._turn_finalizer_task.cancel()
-            self._turn_finalizer_task = None
-
-    def _schedule_turn_finalizer(self, call_started: float, debounce_sec: float | None = None) -> None:
-        self._cancel_turn_finalizer()
-        delay = debounce_sec if debounce_sec is not None else self.turn_silence_window_sec
-        self._turn_finalizer_task = asyncio.create_task(self._turn_finalizer_worker(call_started, delay))
-
-    async def _turn_finalizer_worker(self, call_started: float, delay: float) -> None:
-        try:
-            await asyncio.sleep(delay)
-            if self._closed.is_set():
-                return
-            partial = self._latest_partial_transcript.strip()
-            if not partial:
-                return
-
-            clean = partial.strip(" .,!?;:-_")
-            clean_lower = clean.lower()
-
-            if clean_lower in DISCARD_NOISE_TOKENS or is_spurious_hallucination(clean_lower, self._turn_sequence):
-                self._latest_partial_transcript = ""
-                return
-            if len(clean) < 2 and clean_lower not in LEGITIMATE_SHORT_REPLIES:
-                self._latest_partial_transcript = ""
-                return
-
-            is_speaking = (
-                self._is_assistant_speaking
-                or self._is_client_playing
-                or (time.perf_counter() - self._last_assistant_speech_ended_at < 0.4)
-            )
-            if is_speaking and is_acoustic_echo(clean, self._recent_assistant_utterances, is_currently_speaking=True):
-                self._latest_partial_transcript = ""
-                return
-
-            logger.info("Turn finalization watchdog triggered (silence fallback) session=%s chars=%d", self._session_id, len(clean))
-            await self._request_stt_flush()
-            self._latest_partial_transcript = ""
-            self._speech_active = False
-            await self._final_transcript(clean, call_started)
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            logger.warning("Turn finalizer worker error session=%s: %s", self._session_id, exc)
-
-    async def _request_stt_flush(self) -> None:
-        flush_fn = getattr(self.stt, "flush", None)
-        if callable(flush_fn):
-            try:
-                await flush_fn()
-            except Exception as exc:
-                logger.debug("STT flush error session=%s: %s", self._session_id, exc)
 
     async def run(self, session_id: str, *, resume: bool = False) -> None:
         if self.repository.get_session(session_id) is None:
@@ -519,7 +489,6 @@ class RealtimeVoiceOrchestrator:
                     continue
                 if kind == "retry_speech":
                     self._cancel_silence_timer()
-                    self._cancel_turn_finalizer()
                     last_utt = self._recent_assistant_utterances[-1] if self._recent_assistant_utterances else KuralEngine.opening_message()
                     if self._tts_task is not None and not self._tts_task.done():
                         self._tts_task.cancel()
@@ -573,19 +542,35 @@ class RealtimeVoiceOrchestrator:
                     await self._timing("first_stt_partial", self._speech_started_at, log=True)
                 partial_text = getattr(event, "text", "").strip()
                 if partial_text:
+                    is_assistant_audio_active = (
+                        self._is_assistant_speaking
+                        or self._is_client_playing
+                        or time.perf_counter() - self._last_assistant_speech_ended_at < 1.2
+                    )
+                    if (
+                        is_assistant_audio_active
+                        or not self._speech_active
+                        or is_spurious_hallucination(partial_text.lower(), self._turn_sequence)
+                    ):
+                        # Only preview interim recognition during detected customer
+                        # speech. AVA playback, silence, and known ASR phantoms must
+                        # not appear as customer words in the browser.
+                        self._latest_partial_transcript = ""
+                        await self._send_json({
+                            "type": "transcript_partial", "text": "", "preview_suppressed": True,
+                        })
+                        continue
                     self._latest_partial_transcript = partial_text
-                    self._last_speech_activity_at = time.perf_counter()
                     await self._send_json({
                         "type": "transcript_partial", "text": safe_transcript(partial_text),
                     })
-                    # Schedule silence-based fallback turn finalizer watchdog
-                    self._schedule_turn_finalizer(call_started)
             elif event_name in {"vad.speech_end", "speech_end"}:
                 self._speech_active = False
-                if self._latest_partial_transcript:
-                    # Endpoint detected by provider VAD! Request STT flush and schedule rapid finalization
-                    await self._request_stt_flush()
-                    self._schedule_turn_finalizer(call_started, debounce_sec=0.25)
+                # In VAD mode Saaras emits transcript.final after speech_end. Do not
+                # promote its mutable interim hypothesis into a customer turn here.
+                # Flushing at this point can race and commit an inaccurate partial.
+                self._arm_silence_timer(call_started)
+                self._schedule_turn_finalizer(call_started)
             elif event_name == "transcript.final":
                 self._cancel_turn_finalizer()
                 self._cancel_silence_timer()
@@ -616,7 +601,7 @@ class RealtimeVoiceOrchestrator:
                 is_currently_speaking = (
                     self._is_assistant_speaking
                     or self._is_client_playing
-                    or (time.perf_counter() - self._last_assistant_speech_ended_at < 0.4)
+                    or (time.perf_counter() - self._last_assistant_speech_ended_at < 1.2)
                 )
 
                 if is_currently_speaking and is_acoustic_echo(clean, self._recent_assistant_utterances, is_currently_speaking=True):
@@ -635,12 +620,11 @@ class RealtimeVoiceOrchestrator:
                     self._is_client_playing = False
 
                 # 4. Process valid customer turn exactly once
-                self._latest_partial_transcript = ""
                 self._speech_active = False
+                self._latest_partial_transcript = ""
                 await self._final_transcript(clean, call_started)
             elif event_name == "error":
                 self._cancel_silence_timer()
-                self._cancel_turn_finalizer()
                 logger.warning(
                     "Realtime STT error session=%s code=%s fatal=%s",
                     self._session_id, getattr(event, "code", "unknown"), getattr(event, "is_fatal", False),
@@ -673,7 +657,6 @@ class RealtimeVoiceOrchestrator:
             self._last_processed_at = now
             self._reminder_count = 0  # Reset silence reminder for next turn
             self._cancel_silence_timer()
-            self._cancel_turn_finalizer()
 
             if self._tts_task is not None and not self._tts_task.done():
                 self._tts_task.cancel()

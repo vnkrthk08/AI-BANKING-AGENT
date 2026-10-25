@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from kural.conversation.engine import KuralEngine
 from kural.models import Intent, State
 from kural.providers.schemas import IntentProposal
-from kural.voice.orchestrator import RealtimeVoiceOrchestrator
+from kural.voice.orchestrator import RealtimeVoiceOrchestrator, is_spurious_hallucination
 
 
 class FakeLLM:
@@ -141,6 +141,11 @@ def test_realtime_user_text_triggers_kural_turn_and_speaks(repository):
         isinstance(item, dict) and item.get("type") == "assistant_message" and item.get("turn") == 1
         for item in websocket.sent
     )
+    final_message = next(
+        item for item in websocket.sent
+        if isinstance(item, dict) and item.get("type") == "assistant_message" and item.get("turn") == 1
+    )
+    assert "do not share your OTP or password with anyone" in final_message["text"]
     assert any(isinstance(item, bytes) for item in websocket.sent)
 
 
@@ -175,3 +180,83 @@ def test_realtime_user_sensitive_data_blocks_and_speaks_safety_response(reposito
     assert "Please don't share your OTP" in messages[0]["text"]
     assert "123456" not in str(repository.get_session_detail(conversation.session_id))
     assert any(isinstance(item, bytes) for item in websocket.sent)
+
+
+def test_partial_hypotheses_do_not_become_customer_turns(repository):
+    engine = KuralEngine(repository)
+    conversation, _ = engine.create_session()
+    websocket, stt = FakeWebSocket(), FakeSTTSession()
+    orchestrator = RealtimeVoiceOrchestrator(websocket, repository, stt, FakeRealtimeTTS(), FakeLLM())
+    orchestrator._session_id = conversation.session_id
+
+    async def scenario():
+        for event in (
+            SimpleNamespace(event="vad.speech_start"),
+            SimpleNamespace(event="transcript.partial", text="However, even if you want to learn"),
+            SimpleNamespace(event="vad.speech_end"),
+            SimpleNamespace(event="error", code="TEST_EXIT", is_fatal=True),
+        ):
+            await stt.events.put(event)
+        await orchestrator._read_sarvam(0.0)
+
+    asyncio.run(scenario())
+    assert repository.get_session(conversation.session_id).turn_order == 0
+    assert is_spurious_hallucination("however, even if you want to learn learn")
+    assert any(
+        item.get("type") == "transcript_partial" and item.get("preview_suppressed")
+        for item in websocket.sent if isinstance(item, dict)
+    )
+
+
+def test_assistant_playback_echo_is_suppressed_before_partial_reaches_browser(repository):
+    engine = KuralEngine(repository)
+    conversation, _ = engine.create_session()
+    websocket, stt = FakeWebSocket(), FakeSTTSession()
+    orchestrator = RealtimeVoiceOrchestrator(websocket, repository, stt, FakeRealtimeTTS(), FakeLLM())
+    orchestrator._session_id = conversation.session_id
+    spoken_text = "So, another question. Yes. Yes. Yes. Yes."
+    orchestrator._recent_assistant_utterances.append(spoken_text)
+    orchestrator._is_assistant_speaking = True
+
+    async def scenario():
+        for event in (
+            SimpleNamespace(event="transcript.partial", text="So, another question. Yes."),
+            SimpleNamespace(event="transcript.final", text=spoken_text),
+            SimpleNamespace(event="error", code="TEST_EXIT", is_fatal=True),
+        ):
+            await stt.events.put(event)
+        await orchestrator._read_sarvam(0.0)
+
+    asyncio.run(scenario())
+
+    partials = [
+        item for item in websocket.sent
+        if isinstance(item, dict) and item.get("type") == "transcript_partial"
+    ]
+    assert partials == [{"type": "transcript_partial", "text": "", "preview_suppressed": True}]
+    assert repository.get_session(conversation.session_id).turn_order == 0
+
+
+def test_credential_disclosure_without_a_code_warns_without_ending_call(repository):
+    engine = KuralEngine(repository, llm_provider=FakeLLM())
+    conversation, _ = engine.create_session()
+    engine.turn(conversation.session_id, "yes")
+    engine.begin_live_call(conversation.session_id)
+
+    result = engine.turn(conversation.session_id, "My OTP is")
+
+    assert result.state == State.IDENTITY_CHECK
+    assert not result.ended
+    assert result.policy_decision == "BLOCKED"
+    assert "Please don't share your OTP" in result.response
+    assert "That's okay, we can carry on." in result.response
+
+
+def test_automatic_silence_closing_includes_security_reminder(repository):
+    orchestrator = RealtimeVoiceOrchestrator(
+        FakeWebSocket(), repository, FakeSTTSession(), FakeRealtimeTTS(), FakeLLM()
+    )
+
+    closing = orchestrator._get_silence_closing_text()
+
+    assert "do not share your OTP or password with anyone" in closing

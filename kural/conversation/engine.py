@@ -17,7 +17,7 @@ from kural.gateway.mock_bank import MockBankGateway
 from kural.knowledge import approved
 from kural.knowledge.retriever import default_retriever
 from kural.models import Action, Intent, State, TurnResponse
-from kural.policy.safety import authorize, inspect_input
+from kural.policy.safety import SafetyResult, authorize, inspect_input
 from kural.privacy.transcript import safe_transcript
 from kural.repositories import KuralRepository, RepositoryTransaction
 from kural.providers.config import create_llm_provider
@@ -26,6 +26,9 @@ from kural.providers.schemas import IntentProposal
 
 
 TERMINAL_STATES = {State.OPT_OUT, State.FRAUD_ESCALATION, State.HUMAN_ESCALATION, State.ENDED}
+SECURITY_CLOSING_NOTE = (
+    "Please do not share your OTP or password with anyone; they are confidential. Keep them private."
+)
 logger = logging.getLogger(__name__)
 ALLOWED_TRANSITIONS: dict[State, set[State]] = {
     State.DISCLOSURE: {State.IDENTITY_CHECK, State.CLOSING, State.ENDED},
@@ -94,6 +97,17 @@ class KuralEngine:
 
             import re
             safety = inspect_input(text)
+            if not safety.blocked and re.search(
+                r"\bmy\s+(?:one[- ]time\s+password|otp|mpin|pin|password|cvv|cvc)\s+is\b",
+                text,
+                flags=re.I,
+            ):
+                safety = SafetyResult(
+                    blocked=True,
+                    redacted_text=safety.redacted_text,
+                    reason="credential_disclosure_intent",
+                    sensitive_types=["credential_disclosure_intent"],
+                )
             sanitized_text = safe_transcript(text)
             warning_prefix = ""
 
@@ -161,7 +175,7 @@ class KuralEngine:
                 fallback_used = False
             else:
                 intent, proposal, fallback_used = self._understand_intent(
-                    sanitized_text, text, confidence, on_timing,
+                    sanitized_text, text, conversation.state, confidence, on_timing,
                 )
 
             # Update known facts from extracted proposal entities and customer facts
@@ -231,6 +245,10 @@ class KuralEngine:
             ):
                 self._transition(tx, conversation, State.ENDED)
 
+            if conversation.state in TERMINAL_STATES:
+                if SECURITY_CLOSING_NOTE.casefold() not in response.casefold():
+                    response = f"{response.rstrip()} {SECURITY_CLOSING_NOTE}"
+
             outcome = "ENDED" if conversation.state in TERMINAL_STATES else "IN_PROGRESS"
             self._record_turn(tx, conversation, sanitized_text, intent, response, outcome)
             if conversation.state in TERMINAL_STATES:
@@ -244,9 +262,73 @@ class KuralEngine:
                 fallback_used=fallback_used,
             )
 
-    def _understand_intent(self, sanitized_text: str, original_text: str,
+    def _understand_intent(self, sanitized_text: str, original_text: str, state: State,
                            input_confidence: float,
                            on_timing: Callable[[str], None] | None = None) -> tuple[Intent, IntentProposal | None, bool]:
+        # Keep short, explicit answers on the deterministic path. Sending a clear
+        # yes/no through a remote NLU provider adds network latency without adding
+        # useful information; KURAL's current state supplies the meaning.
+        fast_intent = detect_intent(sanitized_text, input_confidence)
+        fast_intents_by_state = {
+            State.DISCLOSURE: {Intent.AFFIRM, Intent.NEGATE},
+            State.IDENTITY_CHECK: {Intent.AFFIRM, Intent.NEGATE},
+            State.PERMISSION: {Intent.AFFIRM, Intent.NEGATE, Intent.BUSY, Intent.CALLBACK},
+            State.APP_STATUS: {
+                Intent.AFFIRM, Intent.NEGATE, Intent.APP_INSTALLED,
+                Intent.APP_NOT_INSTALLED, Intent.BUSY, Intent.CALLBACK,
+            },
+            State.UPDATE_HELP: {
+                Intent.AFFIRM, Intent.NEGATE, Intent.APP_INSTALLED,
+                Intent.APP_NOT_INSTALLED, Intent.UPDATE_SUCCESS,
+                Intent.UPDATE_FAILURE, Intent.APP_UPDATE_ISSUE,
+                Intent.BUSY, Intent.CALLBACK,
+            },
+            State.ISSUE_CAPTURE: {
+                Intent.AFFIRM, Intent.NEGATE, Intent.BUSY, Intent.CALLBACK,
+                Intent.WANTS_HUMAN,
+            },
+            State.CALLBACK_BOOKING: {
+                Intent.AFFIRM, Intent.NEGATE, Intent.BUSY, Intent.CALLBACK,
+            },
+        }
+        words = sanitized_text.casefold().split()
+        short_reply = len(words) <= 3
+        explicit_install_no = (
+            state == State.APP_STATUS
+            and fast_intent == Intent.APP_NOT_INSTALLED
+            and len(words) <= 7
+        )
+        explicit_working_no = (
+            state == State.UPDATE_HELP
+            and fast_intent == Intent.UPDATE_FAILURE
+            and len(words) <= 6
+            and any(phrase in sanitized_text.casefold() for phrase in (
+                "not working", "isn't working", "is not working", "doesn't work", "does not work",
+            ))
+        )
+        if (
+            (fast_intent in fast_intents_by_state.get(state, set()) and short_reply)
+            or explicit_install_no
+            or explicit_working_no
+        ):
+            has_issue, category, description = detect_issue_details(sanitized_text)
+            customer_facts = {}
+            if fast_intent == Intent.APP_INSTALLED:
+                customer_facts["app_installed"] = True
+            elif fast_intent == Intent.APP_NOT_INSTALLED:
+                customer_facts["app_installed"] = False
+            proposal = IntentProposal(
+                primary_intent=fast_intent,
+                confidence=input_confidence,
+                secondary_question=detect_side_question(sanitized_text),
+                issue_present=has_issue,
+                issue_category=category,
+                issue_description=description,
+                customer_facts=customer_facts,
+                callback_requested=fast_intent == Intent.CALLBACK,
+            )
+            return fast_intent, proposal, False
+
         provider_name = self.llm_provider.provider_name
         model_name = self.llm_provider.model_name
         try:
@@ -545,7 +627,7 @@ class KuralEngine:
                 c.repetition_count = 0
                 c.detour_depth = 0
                 c.return_state = None
-                return "Understood. I’ll end the call. Goodbye.", State.CLOSING, (Action.END_SESSION,)
+                return "No problem. Would you like me to arrange a callback for a more convenient time?", State.CALLBACK_BOOKING, (Action.NO_OP,)
             c.repetition_count += 1
             if c.repetition_count == 2:
                 return "I'm having trouble understanding. Would you like us to arrange a callback, or speak with human support?", State.CALLBACK_BOOKING, (Action.NO_OP,)
@@ -571,7 +653,13 @@ class KuralEngine:
                 c.repetition_count = 0
                 c.detour_depth = 0
                 c.return_state = None
-                return "Thank you. You can install the app from your device’s official app store. I’ll end the call. Goodbye.", State.CLOSING, (Action.END_SESSION,)
+                c.known_customer_facts["app_installed"] = False
+                return (
+                    "No problem. Please install the Town Bank app from Google Play or the Apple App Store. "
+                    "After installing it, tell me whether it opens and works properly.",
+                    State.UPDATE_HELP,
+                    (Action.NO_OP,),
+                )
             c.repetition_count += 1
             if c.repetition_count == 2:
                 return "I'm having trouble understanding. Would you like us to arrange a callback, or speak with human support?", State.CALLBACK_BOOKING, (Action.NO_OP,)
@@ -587,13 +675,15 @@ class KuralEngine:
                 return f"{side_prefix}Great. Thank you for updating the demo app. Goodbye.", State.CLOSING, (Action.END_SESSION,)
             if (
                 intent in (Intent.UPDATE_FAILURE, Intent.APP_UPDATE_ISSUE)
+                or intent == Intent.NEGATE
+                or intent == Intent.APP_NOT_INSTALLED
                 or (proposal and proposal.issue_present)
                 or (c.active_issue is not None)
             ):
                 c.repetition_count = 0
                 c.detour_depth = 0
                 c.return_state = None
-                return "I’m sorry the update did not work. Would you like human app support to follow up?", State.ISSUE_CAPTURE, (Action.NO_OP,)
+                return "I'm sorry it isn't working yet. Would you like me to ask our app support team to follow up?", State.ISSUE_CAPTURE, (Action.NO_OP,)
             c.repetition_count += 1
             if c.repetition_count == 2:
                 return "I'm having trouble understanding. Would you like us to arrange a callback, or speak with human support?", State.CALLBACK_BOOKING, (Action.NO_OP,)
@@ -607,6 +697,8 @@ class KuralEngine:
             c.return_state = None
             if intent in (Intent.AFFIRM, Intent.CALLBACK, Intent.UPDATE_FAILURE, Intent.APP_UPDATE_ISSUE, Intent.WANTS_HUMAN):
                 return approved.ISSUE_CASE_CREATED, State.CASE_CREATION, (Action.CREATE_APP_UPDATE_CASE, Action.REQUEST_CALLBACK)
+            if intent == Intent.NEGATE:
+                return "Understood. I won't request a support callback. Thank you for your time. Goodbye.", State.CLOSING, (Action.END_SESSION,)
             return "Would you like me to request human follow-up for the update problem?", c.state, (Action.NO_OP,)
 
         return "This session has ended. Goodbye.", State.ENDED, (Action.END_SESSION,)

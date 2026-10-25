@@ -29,12 +29,13 @@ def detect_intent(text: str, confidence: float = 1.0) -> Intent:
         (Intent.LANGUAGE_SWITCH, ("speak tamil", "speak hindi", "change language", "in tamil", "in hindi", "tamil please", "hindi please")),
         (Intent.ABUSE, ("you idiot", "shut up", "you are stupid", "fool")),
         (Intent.OUT_OF_SCOPE, ("balance", "statement", "transfer money", "credit score", "loan approval", "check balance")),
-        (Intent.BUSY, ("busy", "not now", "can't talk", "cant talk", "cannot talk", "call later", "call me later", "call back", "driving", "driving right now", "in a meeting", "meeting", "at work", "working", "traveling", "travelling", "call tomorrow", "later please")),
+        (Intent.BUSY, ("busy", "not now", "can't talk", "cant talk", "cannot talk", "call later", "call me later", "call back", "driving", "driving right now", "in a meeting", "meeting", "at work", "i'm working", "i am working", "traveling", "travelling", "call tomorrow", "later please")),
         (Intent.UPDATE_FAILURE, (
             "trouble logging in", "having trouble", "trouble", "can't log in", "cannot log in", "logging in",
             "failed", "error", "problem", "not updating", "isn't updating", "is not updating", "can't update",
             "cannot update", "issue with update", "download failed", "issue", "keeps loading", "not loading",
-            "crashes", "crash", "crashing", "crashed", "not recognized", "not recognised", "not working", "freezes", "frozen", "stuck"
+            "crashes", "crash", "crashing", "crashed", "not recognized", "not recognised", "not working",
+            "isn't working", "is not working", "doesn't work", "does not work", "freezes", "frozen", "stuck"
         )),
         (Intent.UPDATE_SUCCESS, ("updated", "update complete", "done updating", "installed the update", "already updated", "finished updating")),
         (Intent.APP_NOT_INSTALLED, (
@@ -94,6 +95,7 @@ def detect_issue_details(text: str) -> tuple[bool, str | None, str | None]:
     issue_indicators = (
         "keeps loading", "not loading", "loading problem", "fails", "failed", "failing",
         "error", "problem", "trouble", "crashes", "crash", "crashing", "crashed", "not working",
+        "isn't working", "is not working", "doesn't work", "does not work",
         "won't work", "wont work", "closes", "force close", "not recognized", "not recognised",
         "can't", "cannot", "stuck", "frozen", "doesn't open", "does not open", "won't open",
         "download failed", "transaction failed"
