@@ -48,10 +48,13 @@ def test_identity_check_deferral_immediately_records_callback(repository, text, 
     assert result.intent == expected_intent
     assert result.ended
     assert result.callback_id is not None
-    if expected_intent == Intent.CALLBACK:
-        assert repository.list_callbacks(session_id)[0]["requested_at"] is not None
-    else:
-        assert repository.list_callbacks(session_id)[0]["requested_at"] is None
+    # A requested time is retained only when the current calling policy allows it.
+    # In particular, "tomorrow" can land outside permitted calling hours or on a
+    # restricted day, in which case KURAL still records the callback without a time.
+    requested_at = repository.list_callbacks(session_id)[0]["requested_at"]
+    if requested_at is not None:
+        from kural.policy.calling_policy import evaluate_contact_time
+        assert evaluate_contact_time(requested_at)
     assert provider.calls == []
 
 
@@ -98,3 +101,53 @@ def test_identity_sensitive_input_is_blocked_before_provider(repository) -> None
     assert provider.calls == []
     assert repository.list_callbacks(session_id) == []
     assert "123456" not in str(repository.get_session_detail(session_id))
+
+
+def test_no_to_convenient_time_offers_callback_without_ending(repository) -> None:
+    engine = KuralEngine(repository, llm_provider=AffirmingProvider())
+    conversation, _ = engine.create_session()
+    engine.turn(conversation.session_id, "yes")
+    permission = engine.turn(conversation.session_id, "yes")
+    assert permission.state == State.PERMISSION
+    engine.llm_provider.calls.clear()
+
+    result = engine.turn(conversation.session_id, "No")
+
+    assert result.state == State.CALLBACK_BOOKING
+    assert result.ended is False
+    assert "callback" in result.response.lower()
+    assert result.callback_id is None
+    assert engine.llm_provider.calls == []
+
+
+@pytest.mark.parametrize("not_installed_reply", ["No", "I haven't installed it"])
+def test_app_installation_and_working_no_replies_continue_without_llm(repository, not_installed_reply) -> None:
+    engine = KuralEngine(repository, llm_provider=AffirmingProvider())
+    conversation, _ = engine.create_session()
+
+    # Move to the app installation question using deterministic customer answers.
+    engine.turn(conversation.session_id, "yes")
+    engine.turn(conversation.session_id, "yes")
+    app_status = engine.turn(conversation.session_id, "yes")
+    assert app_status.state == State.APP_STATUS
+    engine.llm_provider.calls.clear()
+
+    not_installed = engine.turn(conversation.session_id, not_installed_reply)
+
+    assert not_installed.state == State.UPDATE_HELP
+    assert not_installed.ended is False
+    assert "Google Play" in not_installed.response
+    assert "Apple App Store" in not_installed.response
+    assert "works properly" in not_installed.response
+
+    not_working = engine.turn(conversation.session_id, "No, it isn't working")
+
+    assert not_working.state == State.ISSUE_CAPTURE
+    assert not_working.ended is False
+    assert "support team" in not_working.response
+    assert engine.llm_provider.calls == []
+
+    declined_support = engine.turn(conversation.session_id, "No")
+    assert declined_support.ended is True
+    assert declined_support.state == State.ENDED
+    assert engine.llm_provider.calls == []

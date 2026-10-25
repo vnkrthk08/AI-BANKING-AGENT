@@ -167,9 +167,9 @@ def test_fast_deterministic_fallback_on_llm_failure(repository: SqlAlchemyKuralR
 
     engine.turn(session.session_id, "hello")
 
-    # Customer says "yes", LLM fails -> local deterministic fallback detects AFFIRM
+    # A nuanced affirmative still uses the provider; if it fails, local fallback resolves it.
     t_start = time.perf_counter()
-    res = engine.turn(session.session_id, "yes")
+    res = engine.turn(session.session_id, "I can talk now")
     t_elapsed = (time.perf_counter() - t_start) * 1000
 
     assert res.fallback_used is True
